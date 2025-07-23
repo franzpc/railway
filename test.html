@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test GEE - Índice de Sequedad</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #2c3e50, #3498db);
+            color: white;
+            padding: 15px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+        
+        .controls {
+            position: absolute;
+            top: 80px;
+            left: 15px;
+            z-index: 1000;
+            background: white;
+            padding: 15px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            width: 250px;
+        }
+        
+        .btn {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #3498db, #2980b9);
+            color: white;
+        }
+        
+        .btn-success {
+            background: linear-gradient(135deg, #27ae60, #229954);
+            color: white;
+        }
+        
+        .btn-danger {
+            background: linear-gradient(135deg, #e74c3c, #c0392b);
+            color: white;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        .btn:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        #map { 
+            height: calc(100vh - 70px);
+        }
+        
+        .status {
+            margin: 10px 0;
+            padding: 8px;
+            border-radius: 5px;
+            font-size: 0.9em;
+        }
+        
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        
+        .legend {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: white;
+            padding: 15px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            z-index: 1000;
+            display: none;
+        }
+        
+        .legend h6 {
+            margin: 0 0 10px 0;
+            font-weight: bold;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 3px 0;
+            font-size: 0.85em;
+        }
+        
+        .legend-color {
+            width: 20px;
+            height: 15px;
+            margin-right: 8px;
+            border-radius: 3px;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 10px 0;
+        }
+        
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3498db;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 5px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2><i class="fas fa-fire"></i> Test API GEE - Índice de Sequedad Ecuador</h2>
+        <p>Prueba de integración con Google Earth Engine via Railway</p>
+    </div>
+
+    <div class="controls">
+        <h5>Controles de Prueba</h5>
+        
+        <button id="testConnection" class="btn btn-primary">
+            🔗 Test Conexión GEE
+        </button>
+        
+        <button id="loadSequedad" class="btn btn-success">
+            📊 Cargar Índice de Sequedad
+        </button>
+        
+        <button id="loadIncendios" class="btn btn-danger">
+            🔥 Cargar Incendios
+        </button>
+        
+        <button id="clearLayers" class="btn" style="background: #95a5a6; color: white;">
+            🗑️ Limpiar Capas
+        </button>
+        
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <small>Procesando...</small>
+        </div>
+        
+        <div id="status"></div>
+    </div>
+
+    <div id="legend" class="legend">
+        <h6>Nivel de Sequedad</h6>
+        <div id="legendContent"></div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Configuración
+        const API_BASE = 'https://railway-production-ae07.up.railway.app'; // Cambia por tu URL de Railway
+        
+        // Mapa
+        const map = L.map('map').setView([-1.8312, -78.1834], 7);
+        
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+        
+        // Variables globales
+        let currentLayer = null;
+        let loadingElement = document.getElementById('loading');
+        let statusElement = document.getElementById('status');
+        let legendElement = document.getElementById('legend');
+        
+        // Funciones auxiliares
+        function showLoading() {
+            loadingElement.style.display = 'block';
+        }
+        
+        function hideLoading() {
+            loadingElement.style.display = 'none';
+        }
+        
+        function showStatus(message, type = 'info') {
+            statusElement.innerHTML = `<div class="status ${type}">${message}</div>`;
+            setTimeout(() => {
+                statusElement.innerHTML = '';
+            }, 5000);
+        }
+        
+        function clearCurrentLayer() {
+            if (currentLayer) {
+                map.removeLayer(currentLayer);
+                currentLayer = null;
+            }
+            legendElement.style.display = 'none';
+        }
+        
+        function showLegend(labels, colors) {
+            const legendContent = document.getElementById('legendContent');
+            legendContent.innerHTML = '';
+            
+            labels.forEach((label, index) => {
+                const item = document.createElement('div');
+                item.className = 'legend-item';
+                item.innerHTML = `
+                    <div class="legend-color" style="background-color: #${colors[index]}"></div>
+                    <span>${label}</span>
+                `;
+                legendContent.appendChild(item);
+            });
+            
+            legendElement.style.display = 'block';
+        }
+        
+        // Event Listeners
+        document.getElementById('testConnection').addEventListener('click', async () => {
+            showLoading();
+            try {
+                const response = await fetch(`${API_BASE}/test-gee`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    showStatus(`❌ Error: ${data.error}`, 'error');
+                } else {
+                    showStatus(`✅ ${data.message}`, 'success');
+                }
+            } catch (error) {
+                showStatus(`❌ Error de conexión: ${error.message}`, 'error');
+            } finally {
+                hideLoading();
+            }
+        });
+        
+        document.getElementById('loadSequedad').addEventListener('click', async () => {
+            showLoading();
+            clearCurrentLayer();
+            
+            try {
+                const response = await fetch(`${API_BASE}/indice-sequedad`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    showStatus(`❌ Error: ${data.error}`, 'error');
+                    return;
+                }
+                
+                // Agregar capa al mapa
+                currentLayer = L.tileLayer(data.tile_url, {
+                    opacity: 0.7,
+                    attribution: 'Google Earth Engine - Índice de Sequedad'
+                }).addTo(map);
+                
+                // Mostrar leyenda
+                if (data.legend) {
+                    showLegend(data.legend.labels, data.legend.colors);
+                }
+                
+                showStatus(`✅ ${data.message}`, 'success');
+                
+            } catch (error) {
+                showStatus(`❌ Error cargando sequedad: ${error.message}`, 'error');
+            } finally {
+                hideLoading();
+            }
+        });
+        
+        document.getElementById('loadIncendios').addEventListener('click', async () => {
+            showLoading();
+            clearCurrentLayer();
+            
+            try {
+                const response = await fetch(`${API_BASE}/incendios-ecuador`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    showStatus(`❌ Error: ${data.error}`, 'error');
+                    return;
+                }
+                
+                // Agregar capa al mapa
+                currentLayer = L.tileLayer(data.tile_url, {
+                    opacity: 0.7,
+                    attribution: 'Google Earth Engine - Incendios'
+                }).addTo(map);
+                
+                showStatus(`✅ ${data.message}`, 'success');
+                
+            } catch (error) {
+                showStatus(`❌ Error cargando incendios: ${error.message}`, 'error');
+            } finally {
+                hideLoading();
+            }
+        });
+        
+        document.getElementById('clearLayers').addEventListener('click', () => {
+            clearCurrentLayer();
+            showStatus('🗑️ Capas limpiadas', 'info');
+        });
+        
+        // Test inicial de conexión
+        window.addEventListener('load', async () => {
+            try {
+                const response = await fetch(`${API_BASE}/`);
+                const data = await response.json();
+                showStatus(`🚀 ${data.message}`, 'success');
+            } catch (error) {
+                showStatus(`⚠️ API no disponible. Verifica la URL: ${API_BASE}`, 'error');
+            }
+        });
+    </script>
+</body>
+</html>
