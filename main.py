@@ -14,50 +14,148 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Variable global para saber si EE está inicializado
+ee_initialized = False
+
 def init_ee():
+    global ee_initialized
     try:
         # Para Railway, usaremos variable de entorno
         credentials_json = os.getenv('GOOGLE_CREDENTIALS')
+        
         if credentials_json:
+            print("✓ Variable GOOGLE_CREDENTIALS encontrada")
             credentials_dict = json.loads(credentials_json)
+            print(f"✓ Email de servicio: {credentials_dict.get('client_email', 'No encontrado')}")
+            
+            # Método recomendado para Railway
             credentials = ee.ServiceAccountCredentials(
                 email=credentials_dict['client_email'],
                 key_data=credentials_json
             )
+            
+            print("✓ Credenciales creadas, inicializando EE...")
+            ee.Initialize(credentials)
+            print("✓ Earth Engine inicializado exitosamente!")
+            
         else:
+            print("⚠️ GOOGLE_CREDENTIALS no encontrado, intentando método local...")
             # Para desarrollo local
-            credentials = ee.ServiceAccountCredentials(
-                email='ndice-de-sequedad-09a67e84a86e@mapas-212104.iam.gserviceaccount.com',
-                key_file='credentials.json'
-            )
+            if os.path.exists('credentials.json'):
+                credentials = ee.ServiceAccountCredentials(
+                    email='ndice-de-sequedad-09a67e84a86e@mapas-212104.iam.gserviceaccount.com',
+                    key_file='credentials.json'
+                )
+                ee.Initialize(credentials)
+                print("✓ Earth Engine inicializado con archivo local!")
+            else:
+                print("❌ No se encontraron credenciales")
+                return False
         
-        ee.Initialize(credentials)
+        # Test básico
+        test_image = ee.Image(1)
+        test_info = test_image.getInfo()
+        print("✓ Test básico de EE exitoso")
+        
+        ee_initialized = True
         return True
+        
     except Exception as e:
-        print(f"Error inicializando EE: {e}")
+        print(f"❌ Error inicializando EE: {str(e)}")
+        print(f"❌ Tipo de error: {type(e).__name__}")
         return False
 
 @app.on_event("startup")
 async def startup_event():
-    init_ee()
+    print("🚀 Iniciando aplicación...")
+    success = init_ee()
+    if success:
+        print("✅ Startup completado exitosamente")
+    else:
+        print("❌ Error en startup")
 
 @app.get("/")
 async def root():
-    return {"message": "API GEE Índice de Sequedad funcionando", "status": "ok"}
+    return {
+        "message": "API GEE Índice de Sequedad funcionando", 
+        "status": "ok",
+        "ee_initialized": ee_initialized
+    }
+
+@app.get("/debug")
+async def debug():
+    """Endpoint para diagnóstico"""
+    credentials_json = os.getenv('GOOGLE_CREDENTIALS')
+    
+    debug_info = {
+        "ee_initialized": ee_initialized,
+        "credentials_available": bool(credentials_json),
+        "credentials_length": len(credentials_json) if credentials_json else 0,
+    }
+    
+    if credentials_json:
+        try:
+            cred_dict = json.loads(credentials_json)
+            debug_info["client_email"] = cred_dict.get('client_email', 'No encontrado')
+            debug_info["project_id"] = cred_dict.get('project_id', 'No encontrado')
+        except:
+            debug_info["credentials_parse_error"] = True
+    
+    return debug_info
 
 @app.get("/test-gee")
 async def test_gee():
     try:
+        if not ee_initialized:
+            # Intentar reinicializar
+            print("🔄 EE no inicializado, intentando inicializar...")
+            if not init_ee():
+                return {
+                    "error": "Earth Engine no pudo inicializarse",
+                    "message": "Error conectando con GEE",
+                    "suggestion": "Revisa las variables de entorno"
+                }
+        
         # Test básico - obtener información de Ecuador
         ecuador = ee.FeatureCollection("FAO/GAUL/2015/level0").filter(ee.Filter.eq("ADM0_NAME","Ecuador"))
         info = ecuador.getInfo()
-        return {"message": "GEE conectado exitosamente", "test": "ok", "features": len(info['features'])}
+        
+        return {
+            "message": "GEE conectado exitosamente", 
+            "test": "ok", 
+            "features": len(info['features']),
+            "ee_initialized": ee_initialized
+        }
+        
     except Exception as e:
-        return {"error": str(e), "message": "Error conectando con GEE"}
+        return {
+            "error": str(e),
+            "message": "Error conectando con GEE",
+            "ee_initialized": ee_initialized,
+            "error_type": type(e).__name__
+        }
+
+@app.get("/force-reinit")
+async def force_reinit():
+    """Forzar reinicialización de EE"""
+    global ee_initialized
+    ee_initialized = False
+    success = init_ee()
+    return {
+        "success": success,
+        "ee_initialized": ee_initialized,
+        "message": "Reinicialización " + ("exitosa" if success else "fallida")
+    }
 
 @app.get("/indice-sequedad")
 async def get_indice_sequedad():
     try:
+        if not ee_initialized:
+            return {
+                "error": "Earth Engine no inicializado",
+                "message": "Ejecuta /force-reinit primero"
+            }
+        
         # Definir ROI de Ecuador
         roi = ee.FeatureCollection("FAO/GAUL/2015/level0").filter(ee.Filter.eq("ADM0_NAME","Ecuador"))
         
@@ -228,6 +326,12 @@ async def get_indice_sequedad():
 @app.get("/incendios-ecuador")
 async def get_incendios_ecuador():
     try:
+        if not ee_initialized:
+            return {
+                "error": "Earth Engine no inicializado",
+                "message": "Ejecuta /force-reinit primero"
+            }
+            
         # Área de Ecuador
         ecuador = ee.Geometry.Rectangle([-82, -5, -75, 2])
         
