@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import ee
 import os
 import json
+import tempfile
 
 app = FastAPI()
 
@@ -14,86 +15,140 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def init_gee():
-    try:
-        creds_json = os.getenv('GOOGLE_CREDENTIALS')
-        if not creds_json:
-            print("❌ No hay GOOGLE_CREDENTIALS")
-            return False
-            
-        # Crear archivo temporal
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            f.write(creds_json)
-            creds_file = f.name
-        
-        # Inicializar con archivo
-        ee.Initialize(ee.ServiceAccountCredentials('', creds_file))
-        
-        # Limpiar archivo temporal
-        os.unlink(creds_file)
-        
-        print("✅ EE inicializado correctamente")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error inicializando: {e}")
-        return False
-
-@app.on_event("startup")
-async def startup_event():
-    init_gee()
-
 @app.get("/")
 async def root():
-    return {"message": "API NDVI Test", "status": "ok"}
+    return {"message": "API NDVI Debug", "status": "ok"}
 
-@app.get("/init")
-async def force_init():
-    """Forzar inicialización"""
-    success = init_gee()
-    return {"success": success, "message": "Inicialización " + ("exitosa" if success else "fallida")}
-
-@app.get("/ndvi")
-async def get_ndvi():
+@app.get("/check-creds")
+async def check_credentials():
+    """Verificar que las credenciales estén disponibles"""
+    creds = os.getenv('GOOGLE_CREDENTIALS')
+    
+    if not creds:
+        return {"error": "GOOGLE_CREDENTIALS no encontrado"}
+    
     try:
-        # Reintentar inicialización si es necesario
-        try:
-            test = ee.Image(1).getInfo()
-        except:
-            print("🔄 Reintentando inicialización...")
-            if not init_gee():
-                return {"error": "No se pudo inicializar Earth Engine"}
-        
-        # Ecuador bbox
-        ecuador = ee.Geometry.Rectangle([-82, -5, -75, 2])
-        
-        # NDVI más reciente
-        ndvi = ee.ImageCollection('MODIS/061/MOD13A2') \
-            .select('NDVI') \
-            .filterBounds(ecuador) \
-            .filterDate('2024-01-01', '2024-12-31') \
-            .sort('system:time_start', False) \
-            .first() \
-            .multiply(0.0001)
-        
-        # Clip a Ecuador
-        ndvi_ecuador = ndvi.clip(ecuador)
-        
-        # Generar tiles
-        map_id = ndvi_ecuador.getMapId({
-            'min': 0,
-            'max': 1,
-            'palette': ['red', 'yellow', 'green']
-        })
-        
+        creds_dict = json.loads(creds)
         return {
-            "tile_url": map_id['tile_fetcher'].url_format,
-            "message": "NDVI cargado exitosamente"
+            "creds_found": True,
+            "creds_length": len(creds),
+            "has_private_key": "private_key" in creds_dict,
+            "has_client_email": "client_email" in creds_dict,
+            "client_email": creds_dict.get("client_email", "No encontrado"),
+            "project_id": creds_dict.get("project_id", "No encontrado")
         }
+    except Exception as e:
+        return {"error": f"Error parseando JSON: {e}"}
+
+@app.get("/init-method1")
+async def init_method1():
+    """Método 1: ServiceAccountCredentials con key_data"""
+    try:
+        creds = os.getenv('GOOGLE_CREDENTIALS')
+        if not creds:
+            return {"error": "No credentials"}
+            
+        creds_dict = json.loads(creds)
+        credentials = ee.ServiceAccountCredentials(
+            email=creds_dict['client_email'],
+            key_data=creds
+        )
+        ee.Initialize(credentials)
+        
+        # Test
+        test = ee.Image(1).getInfo()
+        return {"success": True, "method": "key_data", "test": "passed"}
         
     except Exception as e:
-        return {"error": str(e)}
+        return {"success": False, "method": "key_data", "error": str(e)}
+
+@app.get("/init-method2")
+async def init_method2():
+    """Método 2: Archivo temporal"""
+    try:
+        creds = os.getenv('GOOGLE_CREDENTIALS')
+        if not creds:
+            return {"error": "No credentials"}
+            
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(creds)
+            temp_file = f.name
+        
+        credentials = ee.ServiceAccountCredentials('', temp_file)
+        ee.Initialize(credentials)
+        
+        os.unlink(temp_file)  # Limpiar
+        
+        # Test
+        test = ee.Image(1).getInfo()
+        return {"success": True, "method": "temp_file", "test": "passed"}
+        
+    except Exception as e:
+        if 'temp_file' in locals():
+            try:
+                os.unlink(temp_file)
+            except:
+                pass
+        return {"success": False, "method": "temp_file", "error": str(e)}
+
+@app.get("/init-method3")
+async def init_method3():
+    """Método 3: Directo con diccionario"""
+    try:
+        creds = os.getenv('GOOGLE_CREDENTIALS')
+        if not creds:
+            return {"error": "No credentials"}
+            
+        creds_dict = json.loads(creds)
+        
+        # Crear credenciales desde diccionario
+        from google.oauth2 import service_account
+        credentials = service_account.Credentials.from_service_account_info(creds_dict)
+        
+        ee.Initialize(credentials)
+        
+        # Test
+        test = ee.Image(1).getInfo()
+        return {"success": True, "method": "service_account_info", "test": "passed"}
+        
+    except Exception as e:
+        return {"success": False, "method": "service_account_info", "error": str(e)}
+
+@app.get("/init-method4")
+async def init_method4():
+    """Método 4: Con scopes específicos"""
+    try:
+        creds = os.getenv('GOOGLE_CREDENTIALS')
+        if not creds:
+            return {"error": "No credentials"}
+            
+        creds_dict = json.loads(creds)
+        
+        from google.oauth2 import service_account
+        credentials = service_account.Credentials.from_service_account_info(
+            creds_dict,
+            scopes=['https://www.googleapis.com/auth/earthengine']
+        )
+        
+        ee.Initialize(credentials)
+        
+        # Test
+        test = ee.Image(1).getInfo()
+        return {"success": True, "method": "with_scopes", "test": "passed"}
+        
+    except Exception as e:
+        return {"success": False, "method": "with_scopes", "error": str(e)}
+
+@app.get("/test-simple")
+async def test_simple():
+    """Test básico de EE"""
+    try:
+        # Intentar operación simple
+        img = ee.Image(1)
+        info = img.getInfo()
+        return {"success": True, "message": "EE funciona", "info": info}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
