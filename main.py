@@ -14,31 +14,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def init_gee():
+    try:
+        creds_json = os.getenv('GOOGLE_CREDENTIALS')
+        if not creds_json:
+            print("❌ No hay GOOGLE_CREDENTIALS")
+            return False
+            
+        # Crear archivo temporal
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(creds_json)
+            creds_file = f.name
+        
+        # Inicializar con archivo
+        ee.Initialize(ee.ServiceAccountCredentials('', creds_file))
+        
+        # Limpiar archivo temporal
+        os.unlink(creds_file)
+        
+        print("✅ EE inicializado correctamente")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error inicializando: {e}")
+        return False
+
 @app.on_event("startup")
 async def startup_event():
-    try:
-        # Obtener credenciales
-        creds = os.getenv('GOOGLE_CREDENTIALS')
-        if creds:
-            creds_dict = json.loads(creds)
-            # Método directo
-            ee.Initialize(ee.ServiceAccountCredentials(
-                creds_dict['client_email'], 
-                key_data=creds
-            ))
-            print("✅ EE inicializado")
-        else:
-            print("❌ Sin credenciales")
-    except Exception as e:
-        print(f"❌ Error: {e}")
+    init_gee()
 
 @app.get("/")
 async def root():
     return {"message": "API NDVI Test", "status": "ok"}
 
+@app.get("/init")
+async def force_init():
+    """Forzar inicialización"""
+    success = init_gee()
+    return {"success": success, "message": "Inicialización " + ("exitosa" if success else "fallida")}
+
 @app.get("/ndvi")
 async def get_ndvi():
     try:
+        # Reintentar inicialización si es necesario
+        try:
+            test = ee.Image(1).getInfo()
+        except:
+            print("🔄 Reintentando inicialización...")
+            if not init_gee():
+                return {"error": "No se pudo inicializar Earth Engine"}
+        
         # Ecuador bbox
         ecuador = ee.Geometry.Rectangle([-82, -5, -75, 2])
         
