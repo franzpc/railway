@@ -14,347 +14,144 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Variable global para saber si EE está inicializado
 ee_initialized = False
 
 def init_ee():
     global ee_initialized
     try:
-        # Para Railway, usaremos variable de entorno
         credentials_json = os.getenv('GOOGLE_CREDENTIALS')
         
         if credentials_json:
-            print("✓ Variable GOOGLE_CREDENTIALS encontrada")
+            print("✓ Credenciales encontradas")
             credentials_dict = json.loads(credentials_json)
-            print(f"✓ Email de servicio: {credentials_dict.get('client_email', 'No encontrado')}")
             
-            # Método recomendado para Railway
-            credentials = ee.ServiceAccountCredentials(
-                email=credentials_dict['client_email'],
-                key_data=credentials_json
-            )
+            # Usar método que funciona mejor en Railway
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                f.write(credentials_json)
+                temp_file = f.name
             
-            print("✓ Credenciales creadas, inicializando EE...")
-            ee.Initialize(credentials)
-            print("✓ Earth Engine inicializado exitosamente!")
+            # Inicializar con archivo temporal
+            ee.Initialize(ee.ServiceAccountCredentials('', temp_file))
+            os.unlink(temp_file)  # Eliminar archivo temporal
             
-        else:
-            print("⚠️ GOOGLE_CREDENTIALS no encontrado, intentando método local...")
-            # Para desarrollo local
-            if os.path.exists('credentials.json'):
-                credentials = ee.ServiceAccountCredentials(
-                    email='ndice-de-sequedad-09a67e84a86e@mapas-212104.iam.gserviceaccount.com',
-                    key_file='credentials.json'
-                )
-                ee.Initialize(credentials)
-                print("✓ Earth Engine inicializado con archivo local!")
-            else:
-                print("❌ No se encontraron credenciales")
-                return False
-        
-        # Test básico
-        test_image = ee.Image(1)
-        test_info = test_image.getInfo()
-        print("✓ Test básico de EE exitoso")
-        
-        ee_initialized = True
-        return True
-        
+            print("✓ Earth Engine inicializado!")
+            ee_initialized = True
+            return True
+            
     except Exception as e:
-        print(f"❌ Error inicializando EE: {str(e)}")
-        print(f"❌ Tipo de error: {type(e).__name__}")
+        print(f"❌ Error: {e}")
         return False
 
 @app.on_event("startup")
 async def startup_event():
-    print("🚀 Iniciando aplicación...")
-    success = init_ee()
-    if success:
-        print("✅ Startup completado exitosamente")
-    else:
-        print("❌ Error en startup")
+    init_ee()
 
 @app.get("/")
 async def root():
-    return {
-        "message": "API GEE Índice de Sequedad funcionando", 
-        "status": "ok",
-        "ee_initialized": ee_initialized
-    }
-
-@app.get("/debug")
-async def debug():
-    """Endpoint para diagnóstico"""
-    credentials_json = os.getenv('GOOGLE_CREDENTIALS')
-    
-    debug_info = {
-        "ee_initialized": ee_initialized,
-        "credentials_available": bool(credentials_json),
-        "credentials_length": len(credentials_json) if credentials_json else 0,
-    }
-    
-    if credentials_json:
-        try:
-            cred_dict = json.loads(credentials_json)
-            debug_info["client_email"] = cred_dict.get('client_email', 'No encontrado')
-            debug_info["project_id"] = cred_dict.get('project_id', 'No encontrado')
-        except:
-            debug_info["credentials_parse_error"] = True
-    
-    return debug_info
-
-@app.get("/test-gee")
-async def test_gee():
-    try:
-        if not ee_initialized:
-            # Intentar reinicializar
-            print("🔄 EE no inicializado, intentando inicializar...")
-            if not init_ee():
-                return {
-                    "error": "Earth Engine no pudo inicializarse",
-                    "message": "Error conectando con GEE",
-                    "suggestion": "Revisa las variables de entorno"
-                }
-        
-        # Test básico - obtener información de Ecuador
-        ecuador = ee.FeatureCollection("FAO/GAUL/2015/level0").filter(ee.Filter.eq("ADM0_NAME","Ecuador"))
-        info = ecuador.getInfo()
-        
-        return {
-            "message": "GEE conectado exitosamente", 
-            "test": "ok", 
-            "features": len(info['features']),
-            "ee_initialized": ee_initialized
-        }
-        
-    except Exception as e:
-        return {
-            "error": str(e),
-            "message": "Error conectando con GEE",
-            "ee_initialized": ee_initialized,
-            "error_type": type(e).__name__
-        }
-
-@app.get("/force-reinit")
-async def force_reinit():
-    """Forzar reinicialización de EE"""
-    global ee_initialized
-    ee_initialized = False
-    success = init_ee()
-    return {
-        "success": success,
-        "ee_initialized": ee_initialized,
-        "message": "Reinicialización " + ("exitosa" if success else "fallida")
-    }
+    return {"message": "API Sequedad GEE", "ee_initialized": ee_initialized}
 
 @app.get("/indice-sequedad")
 async def get_indice_sequedad():
     try:
         if not ee_initialized:
-            return {
-                "error": "Earth Engine no inicializado",
-                "message": "Ejecuta /force-reinit primero"
-            }
+            if not init_ee():
+                return {"error": "No se pudo inicializar Earth Engine"}
         
-        # Definir ROI de Ecuador
+        # ROI Ecuador
         roi = ee.FeatureCollection("FAO/GAUL/2015/level0").filter(ee.Filter.eq("ADM0_NAME","Ecuador"))
         
         # Fechas
         fecha_inicio = '2024-01-01'
-        fecha_fin = '2025-12-31'
+        fecha_fin = '2024-12-31'
         
-        # Máscara para recortar
-        mascara_cut = ee.Image(1).clip(roi)
+        # VERSIÓN SIMPLIFICADA - Solo usando datos públicos
         
-        def cortar_coleccion(imagen):
-            mascara = mascara_cut.mask()
-            return imagen.updateMask(mascara)
-        
-        # 1. PRECIPITACIÓN GPM
-        gpm_coleccion = ee.ImageCollection('NASA/GPM_L3/IMERG_V06') \
-            .select('precipitationCal') \
-            .filterBounds(roi) \
-            .filterDate(fecha_inicio, fecha_fin) \
-            .sort('system:time_end', False) \
-            .limit(48) \
-            .map(cortar_coleccion)
-        
-        # Duración de precipitación
-        duracion_precipitacion = gpm_coleccion.sum().divide(2).rename('duracion')
-        
-        # 2. TEMPERATURA ERA5
-        temp_last = ee.ImageCollection('ECMWF/ERA5_LAND/DAILY_AGGR') \
-            .select('temperature_2m') \
-            .filterBounds(roi) \
-            .map(cortar_coleccion) \
-            .filterDate(fecha_inicio, fecha_fin) \
-            .sort('system:time_end', False) \
-            .first()
-        
-        # 3. PUNTO DE ROCÍO
-        dewpoint = ee.ImageCollection('ECMWF/ERA5_LAND/DAILY_AGGR') \
-            .select('dewpoint_temperature_2m') \
-            .filterBounds(roi) \
-            .map(cortar_coleccion) \
-            .filterDate(fecha_inicio, fecha_fin) \
-            .sort('system:time_end', False) \
-            .first()
-        
-        # 4. CÁLCULO HUMEDAD RELATIVA
-        tempera_k = temp_last.subtract(273.15)
-        dewpoint_k = dewpoint.subtract(273.15)
-        pvse = dewpoint_k.multiply(17.27).divide(dewpoint_k.add(237.3)).exp().multiply(6.1078)
-        pvses = tempera_k.multiply(17.27).divide(tempera_k.add(237.3)).exp().multiply(6.1078)
-        relative_humidity = pvse.divide(pvses).multiply(100).rename('relahumi')
-        
-        datos = relative_humidity.addBands(temp_last).clip(roi)
-        
-        # 5. NDVI MODIS
-        coleccion_ndvi = ee.ImageCollection("MODIS/061/MOD13A2") \
+        # 1. NDVI MODIS más reciente
+        ndvi_collection = ee.ImageCollection("MODIS/061/MOD13A2") \
             .select('NDVI') \
             .filterDate(fecha_inicio, fecha_fin) \
+            .filterBounds(roi)
+        
+        # NDVI actual (más reciente)
+        ndvi_actual = ndvi_collection.sort('system:time_end', False).first().multiply(0.0001)
+        
+        # NDVI histórico para calcular min/max (usando datos públicos)
+        ndvi_stats = ndvi_collection.reduce(ee.Reducer.minMax())
+        ndvi_min = ndvi_stats.select('NDVI_min').multiply(0.0001)
+        ndvi_max = ndvi_stats.select('NDVI_max').multiply(0.0001)
+        
+        # 2. Precipitación (últimos 30 días)
+        precipitacion = ee.ImageCollection('NASA/GPM_L3/IMERG_V06') \
+            .select('precipitationCal') \
             .filterBounds(roi) \
-            .map(cortar_coleccion)
+            .filterDate('2024-11-01', '2024-12-31') \
+            .sum()
         
-        ndvi_last = coleccion_ndvi.sort('system:time_end', False).first().multiply(0.0001)
+        # 3. Temperatura ERA5 más reciente
+        temperatura = ee.ImageCollection('ECMWF/ERA5_LAND/DAILY_AGGR') \
+            .select('temperature_2m') \
+            .filterBounds(roi) \
+            .filterDate(fecha_inicio, fecha_fin) \
+            .sort('system:time_end', False) \
+            .first() \
+            .subtract(273.15)  # Convertir a Celsius
         
-        # 6. NDVI MIN/MAX (usando assets del proyecto)
-        min_ndvi_sa = ee.Image('projects/ee-oscarlucassolis/assets/ndvi_min')
-        max_ndvi_sa = ee.Image('projects/ee-oscarlucassolis/assets/ndvi_max')
+        # 4. CÁLCULO SIMPLIFICADO DE SEQUEDAD
         
-        max_ndvi = max_ndvi_sa.multiply(0.0001)
-        min_ndvi = min_ndvi_sa.multiply(0.0001)
+        # Relative Greenness (normalizado 0-1)
+        rg = ndvi_actual.subtract(ndvi_min).divide(ndvi_max.subtract(ndvi_min))
         
-        # 7. CÁLCULO EMC (Equilibrium Moisture Content)
-        emc = datos.expression(
-            "(b('relahumi') < 10) ? 0.032229+0.281073*b('relahumi')-0.000578*b('relahumi')*b('temperature_2m')" +
-            ": (b('relahumi') < 50) ? 2.22749+0.160107*b('relahumi')-0.014784*b('temperature_2m')" +
-            ": 21.0606+0.005565*(b('relahumi')**2)-0.00035*b('relahumi')*b('temperature_2m')-0.483199*b('relahumi')"
-        ).rename('EMC')
+        # Factor de sequedad basado en precipitación (invertido)
+        factor_precip = precipitacion.multiply(-1).add(100).divide(100).clamp(0, 1)
         
-        # 8. H100
-        h100_inputs = emc.addBands(duracion_precipitacion).clip(roi)
-        h100 = h100_inputs.expression(
-            "(24 - b('duracion')) * b('EMC') + b('duracion') * (0.5 * b('duracion') + 41)"
-        ).divide(24).rename('H100')
+        # Factor temperatura (temperaturas altas = más sequía)
+        factor_temp = temperatura.subtract(15).divide(20).clamp(0, 1)
         
-        # 9. LRmax
-        lrmax = max_ndvi.expression(
-            '0.30 + 0.30 * ((NDVImax + 0.19) / (0.95 + 0.19))', {
-                'NDVImax': max_ndvi.select('b1')
-            }
-        ).rename('LRmax')
+        # Índice de sequedad combinado (0-100)
+        indice_sequedad = rg.multiply(-1).add(1) \
+            .multiply(factor_precip) \
+            .multiply(factor_temp.add(0.5)) \
+            .multiply(100) \
+            .clamp(0, 100)
         
-        # 10. RG (Relative Greenness)
-        rg = ndvi_last.expression(
-            '((NDVI - NDVImin) / (NDVImax - NDVImin)) * 100', {
-                'NDVI': ndvi_last.select('NDVI'),
-                'NDVImin': min_ndvi.select('b1'),
-                'NDVImax': max_ndvi.select('b1')
-            }
-        ).rename('RG')
-        
-        # 11. LR (Live Fuel Moisture)
-        lr = rg.expression(
-            'RG * LRmax / 100', {
-                'RG': rg,
-                'LRmax': lrmax
-            }
-        ).rename('LR')
-        
-        # 12. MR (usando assets H100 min/max)
-        h100_min = ee.Image('projects/ee-oscarlucassolis/assets/H100_min')
-        h100_max = ee.Image('projects/ee-oscarlucassolis/assets/H100_max')
-        
-        mr = h100.expression(
-            '((H100 - H100min) / (H100max - H100min))', {
-                'H100': h100,
-                'H100min': h100_min.select('b1'),
-                'H100max': h100_max.select('b1')
-            }
-        ).rename('MR')
-        
-        # 13. FDI (Fire Danger Index)
-        fdi_sc = lr.expression(
-            '((1 - LR) * (1 - MR)) * 100', {
-                'LR': lr,
-                'MR': mr
-            }
-        ).rename('FDI')
-        
-        # 14. CLASIFICACIÓN FINAL
-        imagen_fdi = ee.Image(0) \
-            .where(fdi_sc.lt(50), 1) \
-            .where(fdi_sc.gte(50).And(fdi_sc.lt(60)), 2) \
-            .where(fdi_sc.gte(60).And(fdi_sc.lt(70)), 3) \
-            .where(fdi_sc.gte(70).And(fdi_sc.lt(80)), 4) \
-            .where(fdi_sc.gte(80).And(fdi_sc.lt(91)), 5) \
-            .where(fdi_sc.gte(91), 6).clip(roi)
+        # Clasificación en 6 niveles
+        imagen_clasificada = ee.Image(0) \
+            .where(indice_sequedad.lt(15), 1) \
+            .where(indice_sequedad.gte(15).And(indice_sequedad.lt(30)), 2) \
+            .where(indice_sequedad.gte(30).And(indice_sequedad.lt(45)), 3) \
+            .where(indice_sequedad.gte(45).And(indice_sequedad.lt(60)), 4) \
+            .where(indice_sequedad.gte(60).And(indice_sequedad.lt(75)), 5) \
+            .where(indice_sequedad.gte(75), 6) \
+            .clip(roi)
         
         # Paleta de colores
-        simbologia = ['267E00','56E200','FFFC00','FE7400','FF0000','9E00FF']
+        colores = ['267E00','56E200','FFFC00','FE7400','FF0000','9E00FF']
         
         # Generar tiles
-        map_id = imagen_fdi.getMapId({
+        map_id = imagen_clasificada.getMapId({
             'min': 1,
             'max': 6,
-            'palette': simbologia,
-            'opacity': 0.70
+            'palette': colores,
+            'opacity': 0.7
         })
         
         return {
             "tile_url": map_id['tile_fetcher'].url_format,
             "mapid": map_id['mapid'],
             "token": map_id['token'],
-            "message": "Índice de Sequedad Combinado generado exitosamente",
+            "message": "Índice de Sequedad generado exitosamente",
             "legend": {
                 "labels": [
-                    "Muy baja (<50)",
-                    "Baja (50-60)",
-                    "Media (60-70)",
-                    "Alta (70-80)",
-                    "Muy alta (80-91)",
-                    "Extrema (>91)"
+                    "Muy baja (<15)",
+                    "Baja (15-30)", 
+                    "Media (30-45)",
+                    "Alta (45-60)",
+                    "Muy alta (60-75)",
+                    "Extrema (>75)"
                 ],
-                "colors": simbologia
+                "colors": colores
             }
-        }
-        
-    except Exception as e:
-        return {"error": str(e), "details": "Error procesando índice de sequedad"}
-
-@app.get("/incendios-ecuador")
-async def get_incendios_ecuador():
-    try:
-        if not ee_initialized:
-            return {
-                "error": "Earth Engine no inicializado",
-                "message": "Ejecuta /force-reinit primero"
-            }
-            
-        # Área de Ecuador
-        ecuador = ee.Geometry.Rectangle([-82, -5, -75, 2])
-        
-        # Datos de incendios MODIS burned area recientes
-        dataset = ee.ImageCollection('MODIS/061/MCD64A1') \
-                    .filterDate('2024-01-01', '2025-01-01') \
-                    .filterBounds(ecuador) \
-                    .select('BurnDate')
-        
-        mosaic = dataset.max().clip(ecuador)
-        
-        # Generar tiles
-        map_id = mosaic.getMapId({
-            'min': 1,
-            'max': 366,
-            'palette': ['000000', '00ff00', 'ffff00', 'ff0000']
-        })
-        
-        return {
-            "tile_url": map_id['tile_fetcher'].url_format,
-            "mapid": map_id['mapid'],
-            "token": map_id['token'],
-            "message": "Capa de incendios generada exitosamente"
         }
         
     except Exception as e:
