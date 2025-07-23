@@ -1,12 +1,11 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Test GEE - Índice de Sequedad</title>
+    <title>Índice de Sequedad - Ecuador</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
         body {
             margin: 0;
-            padding: 0;
             font-family: Arial, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         }
@@ -25,20 +24,21 @@
             left: 15px;
             z-index: 1000;
             background: white;
-            padding: 15px;
+            padding: 20px;
             border-radius: 10px;
             box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-            width: 250px;
+            width: 280px;
         }
         
         .btn {
             width: 100%;
-            padding: 10px;
-            margin: 5px 0;
+            padding: 12px;
+            margin: 8px 0;
             border: none;
-            border-radius: 5px;
+            border-radius: 6px;
             cursor: pointer;
             font-weight: bold;
+            font-size: 14px;
             transition: all 0.3s ease;
         }
         
@@ -49,11 +49,6 @@
         
         .btn-success {
             background: linear-gradient(135deg, #27ae60, #229954);
-            color: white;
-        }
-        
-        .btn-danger {
-            background: linear-gradient(135deg, #e74c3c, #c0392b);
             color: white;
         }
         
@@ -74,9 +69,9 @@
         
         .status {
             margin: 10px 0;
-            padding: 8px;
-            border-radius: 5px;
-            font-size: 0.9em;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 13px;
         }
         
         .status.success {
@@ -89,12 +84,6 @@
             background: #f8d7da;
             color: #721c24;
             border: 1px solid #f5c6cb;
-        }
-        
-        .status.info {
-            background: #d1ecf1;
-            color: #0c5460;
-            border: 1px solid #bee5eb;
         }
         
         .legend {
@@ -110,15 +99,16 @@
         }
         
         .legend h6 {
-            margin: 0 0 10px 0;
+            margin: 0 0 12px 0;
             font-weight: bold;
+            color: #2c3e50;
         }
         
         .legend-item {
             display: flex;
             align-items: center;
-            margin: 3px 0;
-            font-size: 0.85em;
+            margin: 5px 0;
+            font-size: 13px;
         }
         
         .legend-color {
@@ -126,58 +116,68 @@
             height: 15px;
             margin-right: 8px;
             border-radius: 3px;
+            border: 1px solid #ddd;
         }
         
         .loading {
             display: none;
             text-align: center;
-            margin: 10px 0;
+            margin: 15px 0;
         }
         
         .spinner {
             border: 3px solid #f3f3f3;
             border-top: 3px solid #3498db;
             border-radius: 50%;
-            width: 20px;
-            height: 20px;
+            width: 24px;
+            height: 24px;
             animation: spin 1s linear infinite;
-            margin: 0 auto 5px;
+            margin: 0 auto 8px;
         }
         
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        
+        .info {
+            background: #e8f4fd;
+            border: 1px solid #b3d9f7;
+            color: #31708f;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            margin: 10px 0;
+        }
     </style>
 </head>
 <body>
     <div class="header">
-        <h2><i class="fas fa-fire"></i> Test API GEE - Índice de Sequedad Ecuador</h2>
-        <p>Prueba de integración con Google Earth Engine via Railway</p>
+        <h2>🌡️ Índice de Sequedad - Ecuador</h2>
+        <p>Monitoreo satelital en tiempo real</p>
     </div>
 
     <div class="controls">
-        <h5>Controles de Prueba</h5>
-        
-        <button id="testConnection" class="btn btn-primary">
-            🔗 Test Conexión GEE
-        </button>
+        <h5 style="margin-top: 0; color: #2c3e50;">Controles</h5>
         
         <button id="loadSequedad" class="btn btn-success">
             📊 Cargar Índice de Sequedad
         </button>
         
-        <button id="loadIncendios" class="btn btn-danger">
-            🔥 Cargar Incendios
+        <button id="clearMap" class="btn btn-primary">
+            🗑️ Limpiar Mapa
         </button>
         
-        <button id="clearLayers" class="btn" style="background: #95a5a6; color: white;">
-            🗑️ Limpiar Capas
-        </button>
+        <div class="info">
+            <strong>Datos utilizados:</strong><br>
+            • NDVI MODIS<br>
+            • Precipitación GPM<br>
+            • Temperatura ERA5
+        </div>
         
         <div id="loading" class="loading">
             <div class="spinner"></div>
-            <small>Procesando...</small>
+            <small>Procesando datos satelitales...</small>
         </div>
         
         <div id="status"></div>
@@ -195,33 +195,36 @@
         // Configuración
         const API_BASE = 'https://railway-production-77c4.up.railway.app';
         
-        // Mapa
+        // Mapa centrado en Ecuador
         const map = L.map('map').setView([-1.8312, -78.1834], 7);
         
+        // Mapa base
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors'
         }).addTo(map);
         
-        // Variables globales
+        // Variables
         let currentLayer = null;
-        let loadingElement = document.getElementById('loading');
-        let statusElement = document.getElementById('status');
-        let legendElement = document.getElementById('legend');
+        const loadingElement = document.getElementById('loading');
+        const statusElement = document.getElementById('status');
+        const legendElement = document.getElementById('legend');
         
         // Funciones auxiliares
         function showLoading() {
             loadingElement.style.display = 'block';
+            document.getElementById('loadSequedad').disabled = true;
         }
         
         function hideLoading() {
             loadingElement.style.display = 'none';
+            document.getElementById('loadSequedad').disabled = false;
         }
         
-        function showStatus(message, type = 'info') {
+        function showStatus(message, type = 'success') {
             statusElement.innerHTML = `<div class="status ${type}">${message}</div>`;
             setTimeout(() => {
                 statusElement.innerHTML = '';
-            }, 5000);
+            }, 6000);
         }
         
         function clearCurrentLayer() {
@@ -250,29 +253,13 @@
         }
         
         // Event Listeners
-        document.getElementById('testConnection').addEventListener('click', async () => {
-            showLoading();
-            try {
-                const response = await fetch(`${API_BASE}/test-gee`);
-                const data = await response.json();
-                
-                if (data.error) {
-                    showStatus(`❌ Error: ${data.error}`, 'error');
-                } else {
-                    showStatus(`✅ ${data.message}`, 'success');
-                }
-            } catch (error) {
-                showStatus(`❌ Error de conexión: ${error.message}`, 'error');
-            } finally {
-                hideLoading();
-            }
-        });
-        
         document.getElementById('loadSequedad').addEventListener('click', async () => {
             showLoading();
             clearCurrentLayer();
             
             try {
+                showStatus('Conectando con Google Earth Engine...', 'success');
+                
                 const response = await fetch(`${API_BASE}/indice-sequedad`);
                 const data = await response.json();
                 
@@ -284,7 +271,7 @@
                 // Agregar capa al mapa
                 currentLayer = L.tileLayer(data.tile_url, {
                     opacity: 0.7,
-                    attribution: 'Google Earth Engine - Índice de Sequedad'
+                    attribution: 'Google Earth Engine | MODIS, GPM, ERA5'
                 }).addTo(map);
                 
                 // Mostrar leyenda
@@ -295,53 +282,30 @@
                 showStatus(`✅ ${data.message}`, 'success');
                 
             } catch (error) {
-                showStatus(`❌ Error cargando sequedad: ${error.message}`, 'error');
+                showStatus(`❌ Error de conexión: ${error.message}`, 'error');
             } finally {
                 hideLoading();
             }
         });
         
-        document.getElementById('loadIncendios').addEventListener('click', async () => {
-            showLoading();
+        document.getElementById('clearMap').addEventListener('click', () => {
             clearCurrentLayer();
-            
-            try {
-                const response = await fetch(`${API_BASE}/incendios-ecuador`);
-                const data = await response.json();
-                
-                if (data.error) {
-                    showStatus(`❌ Error: ${data.error}`, 'error');
-                    return;
-                }
-                
-                // Agregar capa al mapa
-                currentLayer = L.tileLayer(data.tile_url, {
-                    opacity: 0.7,
-                    attribution: 'Google Earth Engine - Incendios'
-                }).addTo(map);
-                
-                showStatus(`✅ ${data.message}`, 'success');
-                
-            } catch (error) {
-                showStatus(`❌ Error cargando incendios: ${error.message}`, 'error');
-            } finally {
-                hideLoading();
-            }
+            showStatus('🗑️ Mapa limpiado', 'success');
         });
         
-        document.getElementById('clearLayers').addEventListener('click', () => {
-            clearCurrentLayer();
-            showStatus('🗑️ Capas limpiadas', 'info');
-        });
-        
-        // Test inicial de conexión
+        // Verificar API al cargar
         window.addEventListener('load', async () => {
             try {
                 const response = await fetch(`${API_BASE}/`);
                 const data = await response.json();
-                showStatus(`🚀 ${data.message}`, 'success');
+                
+                if (data.ee_initialized) {
+                    showStatus('🚀 API lista - Earth Engine conectado', 'success');
+                } else {
+                    showStatus('⚠️ API lista - Earth Engine inicializando...', 'error');
+                }
             } catch (error) {
-                showStatus(`⚠️ API no disponible. Verifica la URL: ${API_BASE}`, 'error');
+                showStatus('❌ API no disponible', 'error');
             }
         });
     </script>
