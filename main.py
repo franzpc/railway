@@ -150,6 +150,30 @@ async def test_simple():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@app.get("/debug-format")
+async def debug_format():
+    """Debug del formato de credenciales"""
+    creds = os.getenv('GOOGLE_CREDENTIALS')
+    if not creds:
+        return {"error": "No credentials"}
+    
+    # Verificar formato
+    first_50 = creds[:50]
+    last_50 = creds[-50:]
+    
+    # Verificar si empieza y termina correctamente
+    starts_with_brace = creds.strip().startswith('{')
+    ends_with_brace = creds.strip().endswith('}')
+    
+    return {
+        "length": len(creds),
+        "first_50_chars": first_50,
+        "last_50_chars": last_50,
+        "starts_correctly": starts_with_brace,
+        "ends_correctly": ends_with_brace,
+        "is_valid_json": True  # Si llegamos aquí, es JSON válido
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
