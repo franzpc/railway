@@ -53,10 +53,12 @@ async def test_ee():
 
 @app.get("/ndvi")
 async def get_ndvi():
-    """Obtener capa NDVI de Ecuador"""
+    """Obtener capa NDVI de Ecuador (recortado exacto)"""
     try:
-        # Definir Ecuador
-        ecuador = ee.Geometry.Rectangle([-82, -5, -75, 2])
+        # Usar límite administrativo exacto de Ecuador (más preciso que rectángulo)
+        ecuador = ee.FeatureCollection("FAO/GAUL/2015/level0") \
+            .filter(ee.Filter.eq("ADM0_NAME", "Ecuador")) \
+            .geometry()
         
         # Obtener NDVI más reciente de MODIS
         ndvi_collection = ee.ImageCollection('MODIS/061/MOD13A2') \
@@ -68,28 +70,39 @@ async def get_ndvi():
         # Tomar la imagen más reciente
         ndvi_latest = ndvi_collection.first().multiply(0.0001)
         
-        # Recortar a Ecuador
+        # Recortar EXACTAMENTE a los límites de Ecuador
         ndvi_ecuador = ndvi_latest.clip(ecuador)
         
-        # Generar visualización
+        # Aplicar máscara para mostrar solo Ecuador
+        ndvi_masked = ndvi_ecuador.updateMask(ndvi_ecuador.gte(-1))
+        
+        # Generar visualización mejorada
         vis_params = {
             'min': 0,
             'max': 1,
-            'palette': ['#d73027', '#f46d43', '#fdae61', '#fee08b', '#ffffbf', 
-                       '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837']
+            'palette': [
+                '#8B0000',  # Rojo oscuro (sin vegetación)
+                '#CD5C5C',  # Rojo claro
+                '#F0E68C',  # Amarillo (vegetación baja)
+                '#9ACD32',  # Verde amarillento
+                '#32CD32',  # Verde lima
+                '#228B22',  # Verde bosque
+                '#006400'   # Verde oscuro (vegetación densa)
+            ]
         }
         
         # Obtener URL de tiles
-        map_id = ndvi_ecuador.getMapId(vis_params)
+        map_id = ndvi_masked.getMapId(vis_params)
         
         return {
             "success": True,
             "tile_url": map_id['tile_fetcher'].url_format,
             "mapid": map_id['mapid'],
             "token": map_id['token'],
-            "message": "NDVI cargado exitosamente",
+            "message": "NDVI recortado exactamente para Ecuador",
             "date_range": "2024-01-01 a 2024-12-31",
-            "description": "NDVI más reciente de MODIS para Ecuador"
+            "description": "NDVI más reciente de MODIS recortado con límites administrativos de Ecuador",
+            "boundary_source": "FAO GAUL 2015"
         }
         
     except Exception as e:
