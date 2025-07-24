@@ -90,6 +90,12 @@ class FireProcessor:
         
         return combined
     
+    def load_existing_from_supabase(self):
+        return gpd.GeoDataFrame()
+    
+    def save_raw_to_supabase(self, data):
+        return True
+    
     def update_fire_data(self):
         print("Paso 1: Actualizando datos de incendios...")
         
@@ -283,46 +289,24 @@ class FireProcessor:
         return datos_finales
     
     def assign_location_and_calculate(self, incendios):
-        print("Paso 5: Asignando ión y calculando métricas...")
+        print("Paso 5: Asignando ubicación y calculando métricas...")
         
         try:
-            print(f"Intentando cargar: {self.provinces_path}")
-            print(f"Existe el archivo: {os.path.exists(self.provinces_path)}")
-            
             provincias = gpd.read_file(self.provinces_path)
-            print(f"✅ Shapefile cargado: {len(provincias)} registros")
-            print(f"📍 CRS del shapefile: {provincias.crs}")
-            print(f"📍 CRS de incendios: {incendios.crs}")
-            
         except Exception as e:
-            print(f"❌ Error cargando archivo de provincias: {e}")
+            print(f"Error cargando archivo de provincias: {e}")
             return gpd.GeoDataFrame()
         
-        print(f"🔍 Bounds incendios: {incendios.total_bounds}")
-        print(f"🔍 Bounds provincias: {provincias.total_bounds}")
+        if provincias.crs != incendios.crs:
+            provincias = provincias.to_crs(incendios.crs)
         
-        incendios_wgs84 = incendios.to_crs('EPSG:4326')
-        provincias_wgs84 = provincias.to_crs('EPSG:4326')
-        
-        print(f"🌍 Bounds incendios WGS84: {incendios_wgs84.total_bounds}")
-        print(f"🌍 Bounds provincias WGS84: {provincias_wgs84.total_bounds}")
-        
-        incendios_inicio = (incendios_wgs84.sort_values(['evento_id', 'fecha'])
+        incendios_inicio = (incendios.sort_values(['evento_id', 'fecha'])
                            .groupby('evento_id')
                            .first()
                            .reset_index())
         
-        print(f"🎯 Puntos de inicio de eventos: {len(incendios_inicio)}")
-        
-        info_ion = gpd.sjoin(incendios_inicio, provincias_wgs84, how='left', predicate='intersects')
-        print(f"🔗 Intersecciones encontradas: {len(info_ion)}")
-        print(f"🔗 Registros con ión: {info_ion['dpa_despro'].notna().sum()}")
-        
-        if info_ion.empty or info_ion['dpa_despro'].notna().sum() == 0:
-            print("❌ No se encontraron intersecciones espaciales")
-            return gpd.GeoDataFrame()
-        
-        info_ion = (info_ubicacion.groupby('evento_id').first().reset_index())
+        info_ubicacion = gpd.sjoin(incendios_inicio, provincias, how='left', predicate='intersects')
+        info_ubicacion = (info_ubicacion.groupby('evento_id').first().reset_index())
         
         ubicacion_cols = ['evento_id', 'dpa_despro', 'dpa_descan', 'dpa_despar']
         info_ubicacion = info_ubicacion[ubicacion_cols]
@@ -330,13 +314,11 @@ class FireProcessor:
         incendios_con_ubicacion = incendios.merge(info_ubicacion, on='evento_id', how='left')
         incendios_limpios = incendios_con_ubicacion.dropna(subset=['evento_id', 'fecha', 'dpa_despro'])
         
-        print(f"🧹 Datos limpios: {len(incendios_limpios)} registros")
-        
         if incendios_limpios.empty:
-            print("❌ No hay datos válidos después de la limpieza")
+            print("No hay datos válidos después de la limpieza")
             return gpd.GeoDataFrame()
         
-        print("📐 Calculando superficies y métricas...")
+        print("Calculando superficies y métricas...")
         incendios_limpios['superficie_ha_individual'] = incendios_limpios.geometry.area / 10000
         incendios_calculados = incendios_limpios.copy()
         
@@ -355,10 +337,10 @@ class FireProcessor:
         
         eventos_grandes = incendios_calculados[incendios_calculados['superficie_ha_total'] >= 10].copy()
         
-        print(f"📊 Eventos totales procesados: {incendios_calculados['evento_id'].nunique()}")
-        print(f"📊 Eventos grandes (>=10 ha): {eventos_grandes['evento_id'].nunique()}")
-        print(f"📊 Polígonos totales: {len(incendios_calculados)}")
-        print(f"📊 Polígonos de eventos grandes: {len(eventos_grandes)}")
+        print(f"Eventos totales procesados: {incendios_calculados['evento_id'].nunique()}")
+        print(f"Eventos grandes (>=10 ha): {eventos_grandes['evento_id'].nunique()}")
+        print(f"Polígonos totales: {len(incendios_calculados)}")
+        print(f"Polígonos de eventos grandes: {len(eventos_grandes)}")
         
         return incendios_calculados
     
@@ -366,13 +348,8 @@ class FireProcessor:
         try:
             eventos_grandes = data[data['superficie_ha_total'] >= 10].copy()
             
-            print(f"🔍 DEBUG SUPABASE:")
-            print(f"   - Total registros: {len(data)}")
-            print(f"   - Eventos grandes: {len(eventos_grandes)}")
-            print(f"   - URL: {self.supabase_url}/rest/v1/incendios_grandes")
-            
             if eventos_grandes.empty:
-                print("❌ No hay eventos grandes (>=10 ha) para subir")
+                print("No hay eventos grandes (>=10 ha) para subir")
                 return True
             
             data_copy = eventos_grandes.copy()
@@ -386,103 +363,58 @@ class FireProcessor:
             data_copy = data_copy.fillna('')
             records = data_copy.to_dict('records')
             
-            print(f"📦 Preparados {len(records)} registros para envío")
-            print(f"🔑 API Key: {self.supabase_key[:20]}...")
-            
             url = f"{self.supabase_url}/rest/v1/incendios_grandes"
             headers = {
                 'apikey': self.supabase_key,
                 'Authorization': f'Bearer {self.supabase_key}',
-                'Content-Type': 'application/json',
-                'Prefer': 'return=minimal'
+                'Content-Type': 'application/json'
             }
             
-            print("🗑️ Limpiando tabla anterior...")
-            delete_response = requests.delete(url + "?id=gt.0", headers=headers)
-            print(f"🗑️ Delete status: {delete_response.status_code}")
-            if delete_response.status_code not in [200, 204]:
-                print(f"⚠️ Delete response: {delete_response.text}")
+            delete_response = requests.delete(url, headers=headers)
             
-            print("📡 Enviando nuevos datos...")
             for i in range(0, len(records), 1000):
                 batch = records[i:i+1000]
-                batch_num = i//1000 + 1
-                
-                print(f"📦 Enviando batch {batch_num}: {len(batch)} registros")
-                
                 response = requests.post(url, json=batch, headers=headers)
-                print(f"📨 Response status: {response.status_code}")
-                
                 if response.status_code not in [200, 201]:
-                    print(f"❌ Error en batch {batch_num}")
-                    print(f"❌ Response text: {response.text}")
-                    print(f"❌ Headers enviados: {headers}")
-                    return False
-                else:
-                    print(f"✅ Batch {batch_num} enviado exitosamente")
+                    print(f"Error subiendo batch {i//1000 + 1}: {response.status_code}")
             
-            print(f"🎉 ÉXITO: {len(records)} registros subidos a Supabase")
-            
-            # Verificar que se subieron
-            print("🔍 Verificando datos en Supabase...")
-            check_response = requests.get(url + "?select=count", headers=headers)
-            if check_response.status_code == 200:
-                count_data = check_response.json()
-                print(f"✅ Verificación: {len(count_data)} registros en tabla")
-            
+            print(f"Subidos {len(records)} eventos grandes a Supabase")
             return True
-            
         except Exception as e:
-            print(f"💥 ERROR GENERAL subiendo a Supabase: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"Error subiendo a Supabase: {e}")
             return False
     
     def process_all(self):
         print("=== INICIANDO PROCESAMIENTO COMPLETO DE INCENDIOS ===\n")
         
         try:
-            print("🔥 Paso 1: Iniciando update_fire_data...")
             fire_data = self.update_fire_data()
             if fire_data.empty:
-                print("❌ No hay datos de incendios para procesar")
+                print("No hay datos de incendios para procesar")
                 return {"success": False, "error": "No hay datos de incendios"}
-            print(f"✅ Paso 1 completado: {len(fire_data)} registros")
             
-            print("🔥 Paso 2: Iniciando assign_event_ids...")
             fire_with_ids = self.assign_event_ids(fire_data)
             if fire_with_ids.empty:
-                print("❌ No se pudieron asignar IDs de eventos")
+                print("No se pudieron asignar IDs de eventos")
                 return {"success": False, "error": "No se pudieron asignar IDs de eventos"}
-            print(f"✅ Paso 2 completado: {fire_with_ids['evento_id'].nunique()} eventos únicos")
             
-            print("🔥 Paso 3: Iniciando create_polygons...")
             polygons = self.create_polygons(fire_with_ids)
             if polygons.empty:
-                print("❌ No se pudieron crear polígonos")
+                print("No se pudieron crear polígonos")
                 return {"success": False, "error": "No se pudieron crear polígonos"}
-            print(f"✅ Paso 3 completado: {len(polygons)} polígonos")
             
-            print("🔥 Paso 4: Iniciando remove_overlaps...")
             no_overlaps = self.remove_overlaps(polygons)
             if no_overlaps.empty:
-                print("❌ Error eliminando sobreposiciones")
+                print("Error eliminando sobreposiciones")
                 return {"success": False, "error": "Error eliminando sobreposiciones"}
-            print(f"✅ Paso 4 completado: {len(no_overlaps)} polígonos sin overlap")
             
-            print("🔥 Paso 5: Iniciando assign_location_and_calculate...")
             todos_eventos = self.assign_location_and_calculate(no_overlaps)
-            if todos_eventos is None:
-                print("❌ assign_location_and_calculate retornó None")
-                return {"success": False, "error": "Error en cálculos finales - retornó None"}
-            if todos_eventos.empty:
-                print("❌ assign_location_and_calculate retornó DataFrame vacío")
-                return {"success": False, "error": "Error en cálculos finales - DataFrame vacío"}
-            print(f"✅ Paso 5 completado: {len(todos_eventos)} eventos finales")
+            if todos_eventos is None or todos_eventos.empty:
+                print("Error en cálculos finales")
+                return {"success": False, "error": "Error en cálculos finales"}
             
             eventos_grandes = todos_eventos[todos_eventos['superficie_ha_total'] >= 10]
             
-            print("🔥 Paso 6: Subiendo a Supabase...")
             success = self.save_to_supabase(todos_eventos)
             
             result = {
@@ -507,7 +439,7 @@ class FireProcessor:
             return result
             
         except Exception as e:
-            print(f"💥 ERROR GENERAL en process_all: {e}")
+            print(f"Error en el procesamiento: {e}")
             import traceback
             traceback.print_exc()
             return {"success": False, "error": str(e)}
