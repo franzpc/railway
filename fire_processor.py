@@ -283,7 +283,7 @@ class FireProcessor:
         return datos_finales
     
     def assign_location_and_calculate(self, incendios):
-        print("Paso 5: Asignando ubicación y calculando métricas...")
+        print("Paso 5: Asignando ión y calculando métricas...")
         
         try:
             print(f"Intentando cargar: {self.provinces_path}")
@@ -314,21 +314,21 @@ class FireProcessor:
         
         print(f"🎯 Puntos de inicio de eventos: {len(incendios_inicio)}")
         
-        info_ubicacion = gpd.sjoin(incendios_inicio, provincias_wgs84, how='left', predicate='intersects')
-        print(f"🔗 Intersecciones encontradas: {len(info_ubicacion)}")
-        print(f"🔗 Registros con ubicación: {info_ubicacion['DPA_DESPRO'].notna().sum()}")
+        info_ion = gpd.sjoin(incendios_inicio, provincias_wgs84, how='left', predicate='intersects')
+        print(f"🔗 Intersecciones encontradas: {len(info_ion)}")
+        print(f"🔗 Registros con ión: {info_ion['dpa_despro'].notna().sum()}")
         
-        if info_ubicacion.empty or info_ubicacion['DPA_DESPRO'].notna().sum() == 0:
+        if info_ion.empty or info_ion['dpa_despro'].notna().sum() == 0:
             print("❌ No se encontraron intersecciones espaciales")
             return gpd.GeoDataFrame()
         
-        info_ubicacion = (info_ubicacion.groupby('evento_id').first().reset_index())
+        info_ion = (info_ubicacion.groupby('evento_id').first().reset_index())
         
-        ubicacion_cols = ['evento_id', 'DPA_DESPRO', 'DPA_DESCAN', 'DPA_DESPAR']
+        ubicacion_cols = ['evento_id', 'dpa_despro', 'dpa_descan', 'dpa_despar']
         info_ubicacion = info_ubicacion[ubicacion_cols]
         
         incendios_con_ubicacion = incendios.merge(info_ubicacion, on='evento_id', how='left')
-        incendios_limpios = incendios_con_ubicacion.dropna(subset=['evento_id', 'fecha', 'DPA_DESPRO'])
+        incendios_limpios = incendios_con_ubicacion.dropna(subset=['evento_id', 'fecha', 'dpa_despro'])
         
         print(f"🧹 Datos limpios: {len(incendios_limpios)} registros")
         
