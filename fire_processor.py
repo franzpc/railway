@@ -293,38 +293,66 @@ class FireProcessor:
         
         try:
             print(f"Intentando cargar: {self.provinces_path}")
-            print(f"Path absoluto: {os.path.abspath(self.provinces_path)}")
             print(f"Existe el archivo: {os.path.exists(self.provinces_path)}")
-            print(f"Archivos en data/: {os.listdir('data') if os.path.exists('data') else 'No existe carpeta data'}")
             
             provincias = gpd.read_file(self.provinces_path)
             print(f"✅ Shapefile cargado: {len(provincias)} registros")
+            print(f"📍 CRS del shapefile: {provincias.crs}")
+            print(f"📍 CRS de incendios: {incendios.crs}")
+            
         except Exception as e:
             print(f"❌ Error cargando archivo de provincias: {e}")
             return gpd.GeoDataFrame()
         
-        if provincias.crs != incendios.crs:
-            provincias = provincias.to_crs(incendios.crs)
+        # Debug de coordenadas
+        print(f"🔍 Bounds incendios: {incendios.total_bounds}")
+        print(f"🔍 Bounds provincias: {provincias.total_bounds}")
         
-        incendios_inicio = (incendios.sort_values(['evento_id', 'fecha'])
+        # Convertir todo a WGS84 para debug
+        incendios_wgs84 = incendios.to_crs('EPSG:4326')
+        provincias_wgs84 = provincias.to_crs('EPSG:4326')
+        
+        print(f"🌍 Bounds incendios WGS84: {incendios_wgs84.total_bounds}")
+        print(f"🌍 Bounds provincias WGS84: {provincias_wgs84.total_bounds}")
+        
+        # Usar WGS84 para el join espacial
+        incendios_inicio = (incendios_wgs84.sort_values(['evento_id', 'fecha'])
                            .groupby('evento_id')
                            .first()
                            .reset_index())
         
-        info_ubicacion = gpd.sjoin(incendios_inicio, provincias, how='left', predicate='intersects')
+        print(f"🎯 Puntos de inicio de eventos: {len(incendios_inicio)}")
+        
+        # Join espacial en WGS84
+        info_ubicacion = gpd.sjoin(incendios_inicio, provincias_wgs84, how='left', predicate='intersects')
+        print(f"🔗 Intersecciones encontradas: {len(info_ubicacion)}")
+        print(f"🔗 Registros con ubicación: {info_ubicacion['DPA_DESPRO'].notna().sum()}")
+        
+        if info_ubicacion.empty or info_ubicacion['DPA_DESPRO'].notna().sum() == 0:
+            print("❌ No se encontraron intersecciones espaciales")
+            print("🧪 Muestra de coordenadas incendios:")
+            for i, row in incendios_inicio.head(3).iterrows():
+                print(f"   Evento {row['evento_id']}: ({row.geometry.x:.6f}, {row.geometry.y:.6f})")
+            print("🧪 Muestra de coordenadas provincias:")
+            print(f"   Provincia sample: {provincias_wgs84.iloc[0]['DPA_DESPRO']}")
+            return gpd.GeoDataFrame()
+        
         info_ubicacion = (info_ubicacion.groupby('evento_id').first().reset_index())
         
         ubicacion_cols = ['evento_id', 'DPA_DESPRO', 'DPA_DESCAN', 'DPA_DESPAR']
         info_ubicacion = info_ubicacion[ubicacion_cols]
         
+        # Volver a original CRS para cálculos
         incendios_con_ubicacion = incendios.merge(info_ubicacion, on='evento_id', how='left')
         incendios_limpios = incendios_con_ubicacion.dropna(subset=['evento_id', 'fecha', 'DPA_DESPRO'])
         
+        print(f"🧹 Datos limpios: {len(incendios_limpios)} registros")
+        
         if incendios_limpios.empty:
-            print("No hay datos válidos después de la limpieza")
+            print("❌ No hay datos válidos después de la limpieza")
             return gpd.GeoDataFrame()
         
-        print("Calculando superficies y métricas...")
+        print("📐 Calculando superficies y métricas...")
         incendios_limpios['superficie_ha_individual'] = incendios_limpios.geometry.area / 10000
         incendios_calculados = incendios_limpios.copy()
         
@@ -343,10 +371,10 @@ class FireProcessor:
         
         eventos_grandes = incendios_calculados[incendios_calculados['superficie_ha_total'] >= 10].copy()
         
-        print(f"Eventos totales procesados: {incendios_calculados['evento_id'].nunique()}")
-        print(f"Eventos grandes (>=10 ha): {eventos_grandes['evento_id'].nunique()}")
-        print(f"Polígonos totales: {len(incendios_calculados)}")
-        print(f"Polígonos de eventos grandes: {len(eventos_grandes)}")
+        print(f"📊 Eventos totales procesados: {incendios_calculados['evento_id'].nunique()}")
+        print(f"📊 Eventos grandes (>=10 ha): {eventos_grandes['evento_id'].nunique()}")
+        print(f"📊 Polígonos totales: {len(incendios_calculados)}")
+        print(f"📊 Polígonos de eventos grandes: {len(eventos_grandes)}")
         
         return incendios_calculados
     
