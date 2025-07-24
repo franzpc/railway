@@ -587,6 +587,39 @@ async def cache_status():
             "message": "No hay cache disponible"
         }
 
+# Agregar estas líneas AL FINAL de tu main.py (antes del if __name__)
+from fire_processor import FireProcessor
+
+fire_cache = {"data": None, "timestamp": None, "processing": False}
+
+@app.get("/process-fires")
+async def process_fires():
+    if fire_cache["processing"]:
+        return {"success": False, "message": "Ya procesando incendios..."}
+    
+    fire_cache["processing"] = True
+    try:
+        processor = FireProcessor()
+        result = processor.process_all()
+        fire_cache["data"] = result
+        fire_cache["timestamp"] = time.time()
+        fire_cache["processing"] = False
+        return result
+    except Exception as e:
+        fire_cache["processing"] = False
+        return {"success": False, "error": str(e)}
+
+@app.get("/fires-status") 
+async def fires_status():
+    if fire_cache["timestamp"]:
+        age_minutes = (time.time() - fire_cache["timestamp"]) / 60
+        return {
+            "cache_available": bool(fire_cache["data"]),
+            "cache_age_minutes": round(age_minutes, 1),
+            "processing": fire_cache["processing"]
+        }
+    return {"cache_available": False, "processing": fire_cache["processing"]}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
