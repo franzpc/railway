@@ -90,12 +90,6 @@ class FireProcessor:
         
         return combined
     
-    def load_existing_from_supabase(self):
-        return gpd.GeoDataFrame()
-    
-    def save_raw_to_supabase(self, data):
-        return True
-    
     def update_fire_data(self):
         print("Paso 1: Actualizando datos de incendios...")
         
@@ -304,18 +298,15 @@ class FireProcessor:
             print(f"❌ Error cargando archivo de provincias: {e}")
             return gpd.GeoDataFrame()
         
-        # Debug de coordenadas
         print(f"🔍 Bounds incendios: {incendios.total_bounds}")
         print(f"🔍 Bounds provincias: {provincias.total_bounds}")
         
-        # Convertir todo a WGS84 para debug
         incendios_wgs84 = incendios.to_crs('EPSG:4326')
         provincias_wgs84 = provincias.to_crs('EPSG:4326')
         
         print(f"🌍 Bounds incendios WGS84: {incendios_wgs84.total_bounds}")
         print(f"🌍 Bounds provincias WGS84: {provincias_wgs84.total_bounds}")
         
-        # Usar WGS84 para el join espacial
         incendios_inicio = (incendios_wgs84.sort_values(['evento_id', 'fecha'])
                            .groupby('evento_id')
                            .first()
@@ -323,18 +314,12 @@ class FireProcessor:
         
         print(f"🎯 Puntos de inicio de eventos: {len(incendios_inicio)}")
         
-        # Join espacial en WGS84
         info_ubicacion = gpd.sjoin(incendios_inicio, provincias_wgs84, how='left', predicate='intersects')
         print(f"🔗 Intersecciones encontradas: {len(info_ubicacion)}")
         print(f"🔗 Registros con ubicación: {info_ubicacion['DPA_DESPRO'].notna().sum()}")
         
         if info_ubicacion.empty or info_ubicacion['DPA_DESPRO'].notna().sum() == 0:
             print("❌ No se encontraron intersecciones espaciales")
-            print("🧪 Muestra de coordenadas incendios:")
-            for i, row in incendios_inicio.head(3).iterrows():
-                print(f"   Evento {row['evento_id']}: ({row.geometry.x:.6f}, {row.geometry.y:.6f})")
-            print("🧪 Muestra de coordenadas provincias:")
-            print(f"   Provincia sample: {provincias_wgs84.iloc[0]['DPA_DESPRO']}")
             return gpd.GeoDataFrame()
         
         info_ubicacion = (info_ubicacion.groupby('evento_id').first().reset_index())
@@ -342,7 +327,6 @@ class FireProcessor:
         ubicacion_cols = ['evento_id', 'DPA_DESPRO', 'DPA_DESCAN', 'DPA_DESPAR']
         info_ubicacion = info_ubicacion[ubicacion_cols]
         
-        # Volver a original CRS para cálculos
         incendios_con_ubicacion = incendios.merge(info_ubicacion, on='evento_id', how='left')
         incendios_limpios = incendios_con_ubicacion.dropna(subset=['evento_id', 'fecha', 'DPA_DESPRO'])
         
@@ -382,8 +366,13 @@ class FireProcessor:
         try:
             eventos_grandes = data[data['superficie_ha_total'] >= 10].copy()
             
+            print(f"🔍 DEBUG SUPABASE:")
+            print(f"   - Total registros: {len(data)}")
+            print(f"   - Eventos grandes: {len(eventos_grandes)}")
+            print(f"   - URL: {self.supabase_url}/rest/v1/incendios_grandes")
+            
             if eventos_grandes.empty:
-                print("No hay eventos grandes (>=10 ha) para subir")
+                print("❌ No hay eventos grandes (>=10 ha) para subir")
                 return True
             
             data_copy = eventos_grandes.copy()
@@ -397,25 +386,56 @@ class FireProcessor:
             data_copy = data_copy.fillna('')
             records = data_copy.to_dict('records')
             
+            print(f"📦 Preparados {len(records)} registros para envío")
+            print(f"🔑 API Key: {self.supabase_key[:20]}...")
+            
             url = f"{self.supabase_url}/rest/v1/incendios_grandes"
             headers = {
                 'apikey': self.supabase_key,
                 'Authorization': f'Bearer {self.supabase_key}',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal'
             }
             
+            print("🗑️ Limpiando tabla anterior...")
             delete_response = requests.delete(url, headers=headers)
+            print(f"🗑️ Delete status: {delete_response.status_code}")
+            if delete_response.status_code not in [200, 204]:
+                print(f"⚠️ Delete response: {delete_response.text}")
             
+            print("📡 Enviando nuevos datos...")
             for i in range(0, len(records), 1000):
                 batch = records[i:i+1000]
+                batch_num = i//1000 + 1
+                
+                print(f"📦 Enviando batch {batch_num}: {len(batch)} registros")
+                
                 response = requests.post(url, json=batch, headers=headers)
+                print(f"📨 Response status: {response.status_code}")
+                
                 if response.status_code not in [200, 201]:
-                    print(f"Error subiendo batch {i//1000 + 1}: {response.status_code}")
+                    print(f"❌ Error en batch {batch_num}")
+                    print(f"❌ Response text: {response.text}")
+                    print(f"❌ Headers enviados: {headers}")
+                    return False
+                else:
+                    print(f"✅ Batch {batch_num} enviado exitosamente")
             
-            print(f"Subidos {len(records)} eventos grandes a Supabase")
+            print(f"🎉 ÉXITO: {len(records)} registros subidos a Supabase")
+            
+            # Verificar que se subieron
+            print("🔍 Verificando datos en Supabase...")
+            check_response = requests.get(url + "?select=count", headers=headers)
+            if check_response.status_code == 200:
+                count_data = check_response.json()
+                print(f"✅ Verificación: {len(count_data)} registros en tabla")
+            
             return True
+            
         except Exception as e:
-            print(f"Error subiendo a Supabase: {e}")
+            print(f"💥 ERROR GENERAL subiendo a Supabase: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def process_all(self):
@@ -462,6 +482,7 @@ class FireProcessor:
             
             eventos_grandes = todos_eventos[todos_eventos['superficie_ha_total'] >= 10]
             
+            print("🔥 Paso 6: Subiendo a Supabase...")
             success = self.save_to_supabase(todos_eventos)
             
             result = {
