@@ -308,11 +308,11 @@ class FireProcessor:
         info_ubicacion = gpd.sjoin(incendios_inicio, provincias, how='left', predicate='intersects')
         info_ubicacion = (info_ubicacion.groupby('evento_id').first().reset_index())
         
-        ubicacion_cols = ['evento_id', 'dpa_despro', 'dpa_descan', 'dpa_despar']
+        ubicacion_cols = ['evento_id', 'DPA_DESPRO', 'DPA_DESCAN', 'DPA_DESPAR']
         info_ubicacion = info_ubicacion[ubicacion_cols]
         
         incendios_con_ubicacion = incendios.merge(info_ubicacion, on='evento_id', how='left')
-        incendios_limpios = incendios_con_ubicacion.dropna(subset=['evento_id', 'fecha', 'dpa_despro'])
+        incendios_limpios = incendios_con_ubicacion.dropna(subset=['evento_id', 'fecha', 'DPA_DESPRO'])
         
         if incendios_limpios.empty:
             print("No hay datos válidos después de la limpieza")
