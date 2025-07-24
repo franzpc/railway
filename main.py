@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 import ee
 import os
 import json
-import tempfile
 
 app = FastAPI()
 
@@ -15,38 +14,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-async def root():
-    return {"message": "API NDVI Debug", "status": "ok"}
-
-@app.get("/check-creds")
-async def check_credentials():
-    """Verificar que las credenciales estén disponibles"""
-    creds = os.getenv('GOOGLE_CREDENTIALS')
-    
-    if not creds:
-        return {"error": "GOOGLE_CREDENTIALS no encontrado"}
-    
-    try:
-        creds_dict = json.loads(creds)
-        return {
-            "creds_found": True,
-            "creds_length": len(creds),
-            "has_private_key": "private_key" in creds_dict,
-            "has_client_email": "client_email" in creds_dict,
-            "client_email": creds_dict.get("client_email", "No encontrado"),
-            "project_id": creds_dict.get("project_id", "No encontrado")
-        }
-    except Exception as e:
-        return {"error": f"Error parseando JSON: {e}"}
-
-@app.get("/init-method1")
-async def init_method1():
-    """Método 1: ServiceAccountCredentials con key_data"""
+def init_ee():
+    """Inicializar Earth Engine"""
     try:
         creds = os.getenv('GOOGLE_CREDENTIALS')
         if not creds:
-            return {"error": "No credentials"}
+            return False
             
         creds_dict = json.loads(creds)
         credentials = ee.ServiceAccountCredentials(
@@ -54,125 +27,111 @@ async def init_method1():
             key_data=creds
         )
         ee.Initialize(credentials)
-        
-        # Test
-        test = ee.Image(1).getInfo()
-        return {"success": True, "method": "key_data", "test": "passed"}
-        
+        return True
     except Exception as e:
-        return {"success": False, "method": "key_data", "error": str(e)}
+        print(f"Error inicializando EE: {e}")
+        return False
 
-@app.get("/init-method2")
-async def init_method2():
-    """Método 2: Archivo temporal"""
-    try:
-        creds = os.getenv('GOOGLE_CREDENTIALS')
-        if not creds:
-            return {"error": "No credentials"}
-            
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            f.write(creds)
-            temp_file = f.name
-        
-        credentials = ee.ServiceAccountCredentials('', temp_file)
-        ee.Initialize(credentials)
-        
-        os.unlink(temp_file)  # Limpiar
-        
-        # Test
-        test = ee.Image(1).getInfo()
-        return {"success": True, "method": "temp_file", "test": "passed"}
-        
-    except Exception as e:
-        if 'temp_file' in locals():
-            try:
-                os.unlink(temp_file)
-            except:
-                pass
-        return {"success": False, "method": "temp_file", "error": str(e)}
+@app.on_event("startup")
+async def startup_event():
+    success = init_ee()
+    print(f"EE Initialization: {'Success' if success else 'Failed'}")
 
-@app.get("/init-method3")
-async def init_method3():
-    """Método 3: Directo con diccionario"""
-    try:
-        creds = os.getenv('GOOGLE_CREDENTIALS')
-        if not creds:
-            return {"error": "No credentials"}
-            
-        creds_dict = json.loads(creds)
-        
-        # Crear credenciales desde diccionario
-        from google.oauth2 import service_account
-        credentials = service_account.Credentials.from_service_account_info(creds_dict)
-        
-        ee.Initialize(credentials)
-        
-        # Test
-        test = ee.Image(1).getInfo()
-        return {"success": True, "method": "service_account_info", "test": "passed"}
-        
-    except Exception as e:
-        return {"success": False, "method": "service_account_info", "error": str(e)}
+@app.get("/")
+async def root():
+    return {"message": "API NDVI Ecuador", "status": "ok"}
 
-@app.get("/init-method4")
-async def init_method4():
-    """Método 4: Con scopes específicos"""
+@app.get("/test-ee")
+async def test_ee():
+    """Test básico de Earth Engine"""
     try:
-        creds = os.getenv('GOOGLE_CREDENTIALS')
-        if not creds:
-            return {"error": "No credentials"}
-            
-        creds_dict = json.loads(creds)
-        
-        from google.oauth2 import service_account
-        credentials = service_account.Credentials.from_service_account_info(
-            creds_dict,
-            scopes=['https://www.googleapis.com/auth/earthengine']
-        )
-        
-        ee.Initialize(credentials)
-        
-        # Test
-        test = ee.Image(1).getInfo()
-        return {"success": True, "method": "with_scopes", "test": "passed"}
-        
-    except Exception as e:
-        return {"success": False, "method": "with_scopes", "error": str(e)}
-
-@app.get("/test-simple")
-async def test_simple():
-    """Test básico de EE"""
-    try:
-        # Intentar operación simple
         img = ee.Image(1)
         info = img.getInfo()
-        return {"success": True, "message": "EE funciona", "info": info}
+        return {"success": True, "message": "Earth Engine funcionando"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-@app.get("/debug-format")
-async def debug_format():
-    """Debug del formato de credenciales"""
-    creds = os.getenv('GOOGLE_CREDENTIALS')
-    if not creds:
-        return {"error": "No credentials"}
-    
-    # Verificar formato
-    first_50 = creds[:50]
-    last_50 = creds[-50:]
-    
-    # Verificar si empieza y termina correctamente
-    starts_with_brace = creds.strip().startswith('{')
-    ends_with_brace = creds.strip().endswith('}')
-    
-    return {
-        "length": len(creds),
-        "first_50_chars": first_50,
-        "last_50_chars": last_50,
-        "starts_correctly": starts_with_brace,
-        "ends_correctly": ends_with_brace,
-        "is_valid_json": True  # Si llegamos aquí, es JSON válido
-    }
+@app.get("/ndvi")
+async def get_ndvi():
+    """Obtener capa NDVI de Ecuador"""
+    try:
+        # Definir Ecuador
+        ecuador = ee.Geometry.Rectangle([-82, -5, -75, 2])
+        
+        # Obtener NDVI más reciente de MODIS
+        ndvi_collection = ee.ImageCollection('MODIS/061/MOD13A2') \
+            .select('NDVI') \
+            .filterBounds(ecuador) \
+            .filterDate('2024-01-01', '2024-12-31') \
+            .sort('system:time_start', False)
+        
+        # Tomar la imagen más reciente
+        ndvi_latest = ndvi_collection.first().multiply(0.0001)
+        
+        # Recortar a Ecuador
+        ndvi_ecuador = ndvi_latest.clip(ecuador)
+        
+        # Generar visualización
+        vis_params = {
+            'min': 0,
+            'max': 1,
+            'palette': ['#d73027', '#f46d43', '#fdae61', '#fee08b', '#ffffbf', 
+                       '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837']
+        }
+        
+        # Obtener URL de tiles
+        map_id = ndvi_ecuador.getMapId(vis_params)
+        
+        return {
+            "success": True,
+            "tile_url": map_id['tile_fetcher'].url_format,
+            "mapid": map_id['mapid'],
+            "token": map_id['token'],
+            "message": "NDVI cargado exitosamente",
+            "date_range": "2024-01-01 a 2024-12-31",
+            "description": "NDVI más reciente de MODIS para Ecuador"
+        }
+        
+    except Exception as e:
+        # Si falla, intentar reinicializar
+        if "not initialized" in str(e).lower():
+            if init_ee():
+                return await get_ndvi()  # Reintentar
+        
+        return {"success": False, "error": str(e)}
+
+@app.get("/ndvi-info")
+async def get_ndvi_info():
+    """Información sobre el dataset NDVI"""
+    try:
+        ecuador = ee.Geometry.Rectangle([-82, -5, -75, 2])
+        
+        collection = ee.ImageCollection('MODIS/061/MOD13A2') \
+            .select('NDVI') \
+            .filterBounds(ecuador) \
+            .filterDate('2024-01-01', '2024-12-31')
+        
+        # Obtener información de la colección
+        size = collection.size().getInfo()
+        
+        if size > 0:
+            latest = collection.sort('system:time_start', False).first()
+            date_info = latest.get('system:time_start').getInfo()
+            date_readable = ee.Date(date_info).format('YYYY-MM-dd').getInfo()
+            
+            return {
+                "success": True,
+                "total_images": size,
+                "latest_date": date_readable,
+                "dataset": "MODIS/061/MOD13A2",
+                "spatial_resolution": "500m",
+                "temporal_resolution": "16 days"
+            }
+        else:
+            return {"success": False, "error": "No hay imágenes disponibles"}
+            
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
