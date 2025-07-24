@@ -398,7 +398,7 @@ class FireProcessor:
             }
             
             print("🗑️ Limpiando tabla anterior...")
-            delete_response = requests.delete(url, headers=headers)
+            delete_response = requests.delete(url + "?id=gt.0", headers=headers)
             print(f"🗑️ Delete status: {delete_response.status_code}")
             if delete_response.status_code not in [200, 204]:
                 print(f"⚠️ Delete response: {delete_response.text}")
