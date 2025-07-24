@@ -394,30 +394,43 @@ class FireProcessor:
         print("=== INICIANDO PROCESAMIENTO COMPLETO DE INCENDIOS ===\n")
         
         try:
+            print("🔥 Paso 1: Iniciando update_fire_data...")
             fire_data = self.update_fire_data()
             if fire_data.empty:
-                print("No hay datos de incendios para procesar")
+                print("❌ No hay datos de incendios para procesar")
                 return {"success": False, "error": "No hay datos de incendios"}
+            print(f"✅ Paso 1 completado: {len(fire_data)} registros")
             
+            print("🔥 Paso 2: Iniciando assign_event_ids...")
             fire_with_ids = self.assign_event_ids(fire_data)
             if fire_with_ids.empty:
-                print("No se pudieron asignar IDs de eventos")
+                print("❌ No se pudieron asignar IDs de eventos")
                 return {"success": False, "error": "No se pudieron asignar IDs de eventos"}
+            print(f"✅ Paso 2 completado: {fire_with_ids['evento_id'].nunique()} eventos únicos")
             
+            print("🔥 Paso 3: Iniciando create_polygons...")
             polygons = self.create_polygons(fire_with_ids)
             if polygons.empty:
-                print("No se pudieron crear polígonos")
+                print("❌ No se pudieron crear polígonos")
                 return {"success": False, "error": "No se pudieron crear polígonos"}
+            print(f"✅ Paso 3 completado: {len(polygons)} polígonos")
             
+            print("🔥 Paso 4: Iniciando remove_overlaps...")
             no_overlaps = self.remove_overlaps(polygons)
             if no_overlaps.empty:
-                print("Error eliminando sobreposiciones")
+                print("❌ Error eliminando sobreposiciones")
                 return {"success": False, "error": "Error eliminando sobreposiciones"}
+            print(f"✅ Paso 4 completado: {len(no_overlaps)} polígonos sin overlap")
             
+            print("🔥 Paso 5: Iniciando assign_location_and_calculate...")
             todos_eventos = self.assign_location_and_calculate(no_overlaps)
-            if todos_eventos is None or todos_eventos.empty:
-                print("Error en cálculos finales")
-                return {"success": False, "error": "Error en cálculos finales"}
+            if todos_eventos is None:
+                print("❌ assign_location_and_calculate retornó None")
+                return {"success": False, "error": "Error en cálculos finales - retornó None"}
+            if todos_eventos.empty:
+                print("❌ assign_location_and_calculate retornó DataFrame vacío")
+                return {"success": False, "error": "Error en cálculos finales - DataFrame vacío"}
+            print(f"✅ Paso 5 completado: {len(todos_eventos)} eventos finales")
             
             eventos_grandes = todos_eventos[todos_eventos['superficie_ha_total'] >= 10]
             
@@ -445,7 +458,7 @@ class FireProcessor:
             return result
             
         except Exception as e:
-            print(f"Error en el procesamiento: {e}")
+            print(f"💥 ERROR GENERAL en process_all: {e}")
             import traceback
             traceback.print_exc()
             return {"success": False, "error": str(e)}
