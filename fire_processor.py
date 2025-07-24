@@ -292,9 +292,15 @@ class FireProcessor:
         print("Paso 5: Asignando ubicación y calculando métricas...")
         
         try:
+            print(f"Intentando cargar: {self.provinces_path}")
+            print(f"Path absoluto: {os.path.abspath(self.provinces_path)}")
+            print(f"Existe el archivo: {os.path.exists(self.provinces_path)}")
+            print(f"Archivos en data/: {os.listdir('data') if os.path.exists('data') else 'No existe carpeta data'}")
+            
             provincias = gpd.read_file(self.provinces_path)
+            print(f"✅ Shapefile cargado: {len(provincias)} registros")
         except Exception as e:
-            print(f"Error cargando archivo de provincias: {e}")
+            print(f"❌ Error cargando archivo de provincias: {e}")
             return gpd.GeoDataFrame()
         
         if provincias.crs != incendios.crs:
