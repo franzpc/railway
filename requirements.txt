@@ -10,3 +10,5 @@ shapely==2.0.2
 scipy==1.11.4
 tqdm==4.66.1
 schedule==1.2.0
+fiona==1.9.5
+pyogrio==0.7.2
