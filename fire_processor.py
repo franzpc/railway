@@ -13,7 +13,7 @@ import json
 import tempfile
 warnings.filterwarnings('ignore')
 
-class DataProcessor:
+class FireProcessor:
     def __init__(self):
         self.data_path = os.path.join("data", "ORGANIZACION_TERRITORIAL_PARROQUIAL.shp")
         self.bounds = [-92.0, -5.0, -75.2, 1.7]
