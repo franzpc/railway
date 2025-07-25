@@ -347,9 +347,10 @@ class FireProcessor:
     def save_to_supabase(self, data):
         try:
             eventos_grandes = data[data['superficie_ha_total'] >= 10].copy()
+            eventos_grandes = eventos_grandes[eventos_grandes.geometry.geom_type == 'Polygon'].copy()
             
             if eventos_grandes.empty:
-                print("No hay eventos grandes (>=10 ha) para subir")
+                print("No hay polígonos grandes (>=10 ha) para subir")
                 return True
             
             data_copy = eventos_grandes.copy()
@@ -381,7 +382,7 @@ class FireProcessor:
                     print(f"Response: {response.text}")
                     return False
             
-            print(f"Subidos {len(records)} eventos grandes a Supabase")
+            print(f"Subidos {len(records)} polígonos grandes a Supabase")
             return True
         except Exception as e:
             print(f"Error subiendo a Supabase: {e}")
