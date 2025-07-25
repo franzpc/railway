@@ -15,24 +15,24 @@ warnings.filterwarnings('ignore')
 
 class FireProcessor:
     def __init__(self):
-        self.data_path = os.path.join("data", "ORGANIZACION_TERRITORIAL_PARROQUIAL.shp")
-        self.bounds = [-92.0, -5.0, -75.2, 1.7]
-        self.api_url = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
-        self.api_key = os.getenv('NASA_FIRMS_KEY', '9c57ff9dd1fb752c9c1dc9da87bce875')
+        self.provinces_path = os.path.join("data", "ORGANIZACION_TERRITORIAL_PARROQUIAL.shp")
+        self.area_coords = [-92.0, -5.0, -75.2, 1.7]
+        self.main_url = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
+        self.map_key = os.getenv('NASA_FIRMS_KEY', '9c57ff9dd1fb752c9c1dc9da87bce875')
         self.sources = ["VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT", "VIIRS_SNPP_NRT"]
-        self.days = 10
-        self.dt = 1000
-        self.tl = 3
+        self.day_range = 10
+        self.distance_threshold = 1000
+        self.time_lag = 3
         
-        self.db_url = 'https://neixcsnkwtgdxkucfcnb.supabase.co'
-        self.db_key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5laXhjc25rd3RnZHhrdWNmY25iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDk1NzQ0OTQsImV4cCI6MjA2NTE1MDQ5NH0.OLcE9XYvYL6vzuXqcgp3dMowDZblvQo8qR21Cj39nyY'
+        self.supabase_url = 'https://neixcsnkwtgdxkucfcnb.supabase.co'
+        self.supabase_key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5laXhjc25rd3RnZHhrdWNmY25iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDk1NzQ0OTQsImV4cCI6MjA2NTE1MDQ5NH0.OLcE9XYvYL6vzuXqcgp3dMowDZblvQo8qR21Cj39nyY'
         
     def load_existing_ids(self):
         try:
-            url = f"{self.db_url}/rest/v1/incendios_grandes?select=evento_id"
+            url = f"{self.supabase_url}/rest/v1/incendios_grandes?select=evento_id"
             headers = {
-                'apikey': self.db_key,
-                'Authorization': f'Bearer {self.db_key}'
+                'apikey': self.supabase_key,
+                'Authorization': f'Bearer {self.supabase_key}'
             }
             response = requests.get(url, headers=headers)
             if response.status_code == 200:
@@ -55,10 +55,10 @@ class FireProcessor:
         
         return base_id
         
-    def fetch_data(self, source, date):
-        area = ",".join(map(str, self.bounds))
+    def download_fire_data(self, source, date):
+        area = ",".join(map(str, self.area_coords))
         date_str = date.strftime("%Y-%m-%d")
-        url = f"{self.api_url}/{self.api_key}/{source}/{area}/{self.days}/{date_str}"
+        url = f"{self.main_url}/{self.map_key}/{source}/{area}/{self.day_range}/{date_str}"
         
         try:
             response = requests.get(url, timeout=30)
@@ -79,16 +79,16 @@ class FireProcessor:
             
             return gpd.GeoDataFrame()
         except Exception as e:
-            print(f"Error en {source}: {e}")
+            print(f"Error descargando {source}: {e}")
             return gpd.GeoDataFrame()
     
-    def get_recent_data(self):
+    def get_all_fire_data(self):
         date = datetime.now() - timedelta(days=3)
         all_data = []
         
-        print("Obteniendo datos recientes...")
+        print("Descargando datos de incendios...")
         for source in self.sources:
-            data = self.fetch_data(source, date)
+            data = self.download_fire_data(source, date)
             if not data.empty:
                 all_data.append(data)
         
@@ -97,7 +97,7 @@ class FireProcessor:
         
         combined = pd.concat(all_data, ignore_index=True)
         
-        mapping = {
+        column_mapping = {
             'bright_ti4': 'BRIGHTNESS',
             'scan': 'SCAN',
             'track': 'TRACK',
@@ -112,288 +112,289 @@ class FireProcessor:
             'daynight': 'DAYNIGHT'
         }
         
-        combined = combined.rename(columns=mapping)
-        combined['eid'] = None
+        combined = combined.rename(columns=column_mapping)
+        combined['evento_id'] = None
         combined['ACQ_DATE'] = pd.to_datetime(combined['ACQ_DATE'])
         
         return combined
     
-    def step_one(self):
-        print("Paso 1...")
+    def update_fire_data(self):
+        print("Paso 1: Actualizando datos de incendios...")
         
-        new_data = self.get_recent_data()
+        new_data = self.get_all_fire_data()
         if new_data.empty:
-            print("Sin datos nuevos")
+            print("No hay datos nuevos")
             return gpd.GeoDataFrame(), set()
         
         existing_ids = self.load_existing_ids()
-        print(f"Datos: {len(new_data)}, IDs existentes: {len(existing_ids)}")
+        print(f"Descargados {len(new_data)} registros de FIRMS")
+        print(f"IDs existentes en base: {len(existing_ids)}")
         return new_data, existing_ids
     
-    def step_two(self, data, existing_ids):
-        print("Paso 2...")
+    def assign_event_ids(self, incendios, existing_ids):
+        print("Paso 2: Asignando IDs de eventos...")
         
-        data = data[
-            (data['ACQ_DATE'] >= '2025-04-01') & 
-            (data['ACQ_DATE'] <= '2025-12-31')
+        incendios = incendios[
+            (incendios['ACQ_DATE'] >= '2025-04-01') & 
+            (incendios['ACQ_DATE'] <= '2025-12-31')
         ].copy()
         
-        if data.empty:
-            return data
+        if incendios.empty:
+            return incendios
         
-        data = data.sort_values('ACQ_DATE').reset_index(drop=True)
-        data['eid'] = None
+        incendios = incendios.sort_values('ACQ_DATE').reset_index(drop=True)
+        incendios['evento_id'] = None
         
-        print("Procesando...")
-        for i in tqdm(range(len(data))):
-            if pd.isna(data.loc[i, 'eid']):
-                point = data.iloc[i]
+        print("Procesando clustering espacial-temporal...")
+        for i in tqdm(range(len(incendios))):
+            if pd.isna(incendios.loc[i, 'evento_id']):
+                point = incendios.iloc[i]
                 coords = point.geometry.get_coordinates()
                 lng, lat = coords.x.iloc[0], coords.y.iloc[0]
+                
                 lng_4326 = lng * 180 / 20037508.34
                 lat_4326 = lat * 180 / 20037508.34
                 
                 tracking_id = self.create_tracking_id(lng_4326, lat_4326, point['ACQ_DATE'], existing_ids)
                 existing_ids.add(tracking_id)
                 
-                data.loc[i, 'eid'] = tracking_id
-                pts = [i]
+                incendios.loc[i, 'evento_id'] = tracking_id
+                puntos_evento = [i]
                 
                 while True:
-                    new_pts = []
+                    nuevos_puntos = []
                     
-                    for pt_idx in pts:
-                        base_pt = data.iloc[pt_idx]
-                        unclassified = data[data['eid'].isna()]
+                    for punto_idx in puntos_evento:
+                        punto_base = incendios.iloc[punto_idx]
+                        sin_clasificar = incendios[incendios['evento_id'].isna()]
                         
-                        if unclassified.empty:
+                        if sin_clasificar.empty:
                             continue
                         
-                        time_diff = (unclassified['ACQ_DATE'] - base_pt['ACQ_DATE']).dt.days
-                        time_valid = (time_diff >= 0) & (time_diff <= self.tl)
-                        candidates = unclassified[time_valid]
+                        diferencia_tiempo = (sin_clasificar['ACQ_DATE'] - punto_base['ACQ_DATE']).dt.days
+                        tiempo_valido = (diferencia_tiempo >= 0) & (diferencia_tiempo <= self.time_lag)
+                        candidatos_temporales = sin_clasificar[tiempo_valido]
                         
-                        if candidates.empty:
+                        if candidatos_temporales.empty:
                             continue
                         
-                        distances = candidates.geometry.distance(base_pt.geometry)
-                        dist_valid = distances <= self.dt
-                        finals = candidates[dist_valid]
+                        distancias = candidatos_temporales.geometry.distance(punto_base.geometry)
+                        distancia_valida = distancias <= self.distance_threshold
+                        candidatos_finales = candidatos_temporales[distancia_valida]
                         
-                        for idx in finals.index:
-                            data.loc[idx, 'eid'] = tracking_id
-                            new_pts.append(idx)
+                        for idx in candidatos_finales.index:
+                            incendios.loc[idx, 'evento_id'] = tracking_id
+                            nuevos_puntos.append(idx)
                     
-                    if not new_pts:
+                    if not nuevos_puntos:
                         break
                     
-                    pts = new_pts
+                    puntos_evento = nuevos_puntos
         
-        return data
+        return incendios
     
-    def step_three(self, data):
-        print("Paso 3...")
+    def create_polygons(self, incendios):
+        print("Paso 3: Creando polígonos de incendios...")
         
-        valid_events = data.groupby('eid').size()
-        valid_events = valid_events[valid_events >= 5].index
-        filtered = data[data['eid'].isin(valid_events)].copy()
+        eventos_validos = incendios.groupby('evento_id').size()
+        eventos_validos = eventos_validos[eventos_validos >= 5].index
+        incendios_filtrados = incendios[incendios['evento_id'].isin(eventos_validos)].copy()
         
-        print(f"Eventos válidos: {len(valid_events)} de {data['eid'].nunique()}")
+        print(f"Eventos con ≥5 puntos: {len(eventos_validos)} de {incendios['evento_id'].nunique()} totales")
         
-        if filtered.empty:
+        if incendios_filtrados.empty:
             return gpd.GeoDataFrame()
         
-        filtered['dt'] = filtered['ACQ_DATE'].dt.strftime('%Y-%m-%d')
-        results = []
-        unique_events = filtered['eid'].unique()
+        incendios_filtrados['datetime'] = incendios_filtrados['ACQ_DATE'].dt.strftime('%Y-%m-%d')
+        resultados_finales = []
+        eventos_unicos = incendios_filtrados['evento_id'].unique()
         
-        for event in tqdm(unique_events, desc="Procesando"):
-            current = filtered[filtered['eid'] == event].copy()
-            current = current.sort_values('dt')
+        for evento in tqdm(eventos_unicos, desc="Procesando eventos"):
+            incendio_actual = incendios_filtrados[incendios_filtrados['evento_id'] == evento].copy()
+            incendio_actual = incendio_actual.sort_values('datetime')
             
-            dates = sorted(current['dt'].unique())
-            accumulated_pts = []
-            prev_poly = None
+            fechas = sorted(incendio_actual['datetime'].unique())
+            puntos_acumulados = []
+            poligono_anterior = None
             
-            for current_date in dates:
-                day_pts = current[current['dt'] == current_date]
+            for fecha_actual in fechas:
+                puntos_dia = incendio_actual[incendio_actual['datetime'] == fecha_actual]
                 
-                for _, pt in day_pts.iterrows():
-                    accumulated_pts.append([pt.geometry.x, pt.geometry.y])
+                for _, punto in puntos_dia.iterrows():
+                    puntos_acumulados.append([punto.geometry.x, punto.geometry.y])
                 
-                current_poly = None
+                poligono_actual = None
                 
-                if len(accumulated_pts) >= 3:
+                if len(puntos_acumulados) >= 3:
                     try:
-                        tri = Delaunay(np.array(accumulated_pts))
-                        triangles = []
+                        tri = Delaunay(np.array(puntos_acumulados))
+                        triangulos = []
                         
                         for simplex in tri.simplices:
-                            coords = [accumulated_pts[i] for i in simplex]
-                            triangle = Polygon(coords)
+                            triangle_coords = [puntos_acumulados[i] for i in simplex]
+                            triangle = Polygon(triangle_coords)
                             
-                            edge_coords = list(triangle.exterior.coords)
-                            max_edge = max([
-                                Point(edge_coords[i]).distance(Point(edge_coords[i+1])) 
-                                for i in range(len(edge_coords)-1)
+                            coords = list(triangle.exterior.coords)
+                            max_lado = max([
+                                Point(coords[i]).distance(Point(coords[i+1])) 
+                                for i in range(len(coords)-1)
                             ])
                             
-                            area = triangle.area / 10000
+                            area_ha = triangle.area / 10000
                             
-                            if max_edge <= 2000 and area <= 500:
-                                triangles.append(triangle)
+                            if max_lado <= 2000 and area_ha <= 500:
+                                triangulos.append(triangle)
                         
-                        if triangles:
-                            current_poly = unary_union(triangles)
+                        if triangulos:
+                            poligono_actual = unary_union(triangulos)
                             
-                            if prev_poly is not None:
-                                current_poly = unary_union([current_poly, prev_poly])
+                            if poligono_anterior is not None:
+                                poligono_actual = unary_union([poligono_actual, poligono_anterior])
                             
-                            prev_poly = current_poly
+                            poligono_anterior = poligono_actual
                         else:
-                            current_poly = prev_poly
+                            poligono_actual = poligono_anterior
                             
                     except Exception as e:
-                        current_poly = prev_poly
+                        poligono_actual = poligono_anterior
                         
-                elif len(accumulated_pts) == 2:
-                    points = [Point(p) for p in accumulated_pts]
-                    current_poly = unary_union(points).convex_hull
+                elif len(puntos_acumulados) == 2:
+                    points = [Point(p) for p in puntos_acumulados]
+                    poligono_actual = unary_union(points).convex_hull
                 else:
-                    current_poly = Point(accumulated_pts[0]) if accumulated_pts else None
+                    poligono_actual = Point(puntos_acumulados[0]) if puntos_acumulados else None
                 
-                if current_poly is not None and not current_poly.is_empty:
-                    result = {
-                        'eid': event,
-                        'fecha': pd.to_datetime(current_date),
-                        'geometry': current_poly
+                if poligono_actual is not None and not poligono_actual.is_empty:
+                    resultado = {
+                        'evento_id': evento,
+                        'fecha': pd.to_datetime(fecha_actual),
+                        'geometry': poligono_actual
                     }
-                    results.append(result)
+                    resultados_finales.append(resultado)
         
-        if not results:
+        if not resultados_finales:
             return gpd.GeoDataFrame()
         
-        result_gdf = gpd.GeoDataFrame(results, crs='EPSG:32717')
-        return result_gdf
+        resultado_gdf = gpd.GeoDataFrame(resultados_finales, crs='EPSG:32717')
+        return resultado_gdf
     
-    def step_four(self, data):
-        print("Paso 4...")
+    def remove_overlaps(self, incendios):
+        print("Paso 4: Eliminando sobreposiciones...")
         
-        data = data.sort_values(['eid', 'fecha']).reset_index(drop=True)
-        new_polys = []
-        unique_events = data['eid'].unique()
+        incendios = incendios.sort_values(['evento_id', 'fecha']).reset_index(drop=True)
+        nuevos_poligonos = []
+        eventos_unicos = incendios['evento_id'].unique()
         
-        for event in tqdm(unique_events, desc="Limpieza"):
-            event_polys = data[data['eid'] == event].copy()
-            accumulated_geom = None
+        for evento in tqdm(eventos_unicos, desc="Eliminando sobreposiciones"):
+            poligonos_evento = incendios[incendios['evento_id'] == evento].copy()
+            geometria_acumulada = None
             
-            for idx, row in event_polys.iterrows():
-                current_geom = row.geometry
+            for idx, row in poligonos_evento.iterrows():
+                geom_actual = row.geometry
                 
-                if current_geom.is_empty:
+                if geom_actual.is_empty:
                     continue
                 
-                if accumulated_geom is None:
-                    unique_geom = current_geom
+                if geometria_acumulada is None:
+                    geom_unica = geom_actual
                 else:
                     try:
-                        unique_geom = current_geom.difference(accumulated_geom)
+                        geom_unica = geom_actual.difference(geometria_acumulada)
                     except:
                         continue
                 
-                if not unique_geom.is_empty:
-                    new_row = row.copy()
-                    new_row.geometry = unique_geom
-                    new_polys.append(new_row)
+                if not geom_unica.is_empty:
+                    nuevo_row = row.copy()
+                    nuevo_row.geometry = geom_unica
+                    nuevos_poligonos.append(nuevo_row)
                     
-                    if accumulated_geom is None:
-                        accumulated_geom = unique_geom
+                    if geometria_acumulada is None:
+                        geometria_acumulada = geom_unica
                     else:
-                        accumulated_geom = unary_union([accumulated_geom, unique_geom])
+                        geometria_acumulada = unary_union([geometria_acumulada, geom_unica])
         
-        if not new_polys:
+        if not nuevos_poligonos:
             return gpd.GeoDataFrame()
         
-        final_data = gpd.GeoDataFrame(new_polys, crs='EPSG:32717')
-        return final_data
+        datos_finales = gpd.GeoDataFrame(nuevos_poligonos, crs='EPSG:32717')
+        return datos_finales
     
-    def step_five(self, data):
-        print("Paso 5...")
+    def assign_location_and_calculate(self, incendios):
+        print("Paso 5: Asignando ubicación y calculando métricas...")
         
         try:
-            admin = gpd.read_file(self.data_path)
+            provincias = gpd.read_file(self.provinces_path)
         except Exception as e:
-            print(f"Error archivo: {e}")
+            print(f"Error cargando archivo de provincias: {e}")
             return gpd.GeoDataFrame()
         
-        if admin.crs != data.crs:
-            admin = admin.to_crs(data.crs)
+        if provincias.crs != incendios.crs:
+            provincias = provincias.to_crs(incendios.crs)
         
-        start_points = (data.sort_values(['eid', 'fecha'])
-                       .groupby('eid')
-                       .first()
-                       .reset_index())
+        incendios_inicio = (incendios.sort_values(['evento_id', 'fecha'])
+                           .groupby('evento_id')
+                           .first()
+                           .reset_index())
         
-        location_info = gpd.sjoin(start_points, admin, how='left', predicate='intersects')
-        location_info = (location_info.groupby('eid').first().reset_index())
+        info_ubicacion = gpd.sjoin(incendios_inicio, provincias, how='left', predicate='intersects')
+        info_ubicacion = (info_ubicacion.groupby('evento_id').first().reset_index())
         
-        location_cols = ['eid', 'DPA_DESPRO', 'DPA_DESCAN', 'DPA_DESPAR']
-        location_info = location_info[location_cols]
+        ubicacion_cols = ['evento_id', 'DPA_DESPRO', 'DPA_DESCAN', 'DPA_DESPAR']
+        info_ubicacion = info_ubicacion[ubicacion_cols]
         
-        location_info = location_info.rename(columns={
+        info_ubicacion = info_ubicacion.rename(columns={
             'DPA_DESPRO': 'dpa_despro',
             'DPA_DESCAN': 'dpa_descan',
             'DPA_DESPAR': 'dpa_despar'
         })
         
-        data_with_location = data.merge(location_info, on='eid', how='left')
-        clean_data = data_with_location.dropna(subset=['eid', 'fecha', 'dpa_despro'])
+        incendios_con_ubicacion = incendios.merge(info_ubicacion, on='evento_id', how='left')
+        incendios_limpios = incendios_con_ubicacion.dropna(subset=['evento_id', 'fecha', 'dpa_despro'])
         
-        if clean_data.empty:
-            print("Sin datos válidos")
+        if incendios_limpios.empty:
+            print("No hay datos válidos después de la limpieza")
             return gpd.GeoDataFrame()
         
-        print("Calculando métricas...")
-        clean_data['superficie_ha_individual'] = clean_data.geometry.area / 10000
-        calculated = clean_data.copy()
+        print("Calculando superficies y métricas...")
+        incendios_limpios['superficie_ha_individual'] = incendios_limpios.geometry.area / 10000
+        incendios_calculados = incendios_limpios.copy()
         
-        def calc_metrics(group):
-            group = group.sort_values('fecha').reset_index(drop=True)
-            group['dia_del_incendio'] = range(1, len(group) + 1)
-            group['superficie_ha_total'] = group['superficie_ha_individual'].sum()
-            group['fecha_inicio'] = group['fecha'].min()
-            group['fecha_fin'] = group['fecha'].max()
-            group['duracion_dias'] = (group['fecha_fin'] - group['fecha_inicio']).dt.days + 1
-            return group
+        def calcular_metricas_evento(grupo):
+            grupo = grupo.sort_values('fecha').reset_index(drop=True)
+            grupo['dia_del_incendio'] = range(1, len(grupo) + 1)
+            grupo['superficie_ha_total'] = grupo['superficie_ha_individual'].sum()
+            grupo['fecha_inicio'] = grupo['fecha'].min()
+            grupo['fecha_fin'] = grupo['fecha'].max()
+            grupo['duracion_dias'] = (grupo['fecha_fin'] - grupo['fecha_inicio']).dt.days + 1
+            return grupo
         
-        calculated = (calculated.groupby('eid')
-                     .apply(calc_metrics)
-                     .reset_index(drop=True))
+        incendios_calculados = (incendios_calculados.groupby('evento_id')
+                               .apply(calcular_metricas_evento)
+                               .reset_index(drop=True))
         
-        large_events = calculated[calculated['superficie_ha_total'] >= 10].copy()
+        eventos_grandes = incendios_calculados[incendios_calculados['superficie_ha_total'] >= 10].copy()
         
-        print(f"Eventos procesados: {calculated['eid'].nunique()}")
-        print(f"Eventos grandes: {large_events['eid'].nunique()}")
-        print(f"Polígonos: {len(calculated)}")
-        print(f"Polígonos grandes: {len(large_events)}")
+        print(f"Eventos totales procesados: {incendios_calculados['evento_id'].nunique()}")
+        print(f"Eventos grandes (>=10 ha): {eventos_grandes['evento_id'].nunique()}")
+        print(f"Polígonos totales: {len(incendios_calculados)}")
+        print(f"Polígonos de eventos grandes: {len(eventos_grandes)}")
         
-        calculated = calculated.rename(columns={'eid': 'evento_id'})
-        return calculated
+        return incendios_calculados
     
-    def save_data(self, data):
+    def save_to_supabase(self, data):
         try:
-            large_events = data[data['superficie_ha_total'] >= 10].copy()
-            large_events = large_events[large_events.geometry.geom_type == 'Polygon'].copy()
+            eventos_grandes = data[data['superficie_ha_total'] >= 10].copy()
+            eventos_grandes = eventos_grandes[eventos_grandes.geometry.geom_type == 'Polygon'].copy()
             
-            if large_events.empty:
-                print("Sin polígonos para actualizar")
+            if eventos_grandes.empty:
+                print("No hay polígonos grandes (>=10 ha) para subir")
                 return True
             
             existing_ids = self.load_existing_ids()
-            new_events = large_events[~large_events['evento_id'].astype(str).isin(existing_ids)].copy()
+            new_events = eventos_grandes[~eventos_grandes['evento_id'].astype(str).isin(existing_ids)].copy()
             
             if new_events.empty:
-                print("Sin eventos nuevos")
+                print("No hay eventos nuevos para agregar")
                 return True
             
             data_copy = new_events.copy()
@@ -407,10 +408,10 @@ class FireProcessor:
             data_copy = data_copy.fillna('')
             records = data_copy.to_dict('records')
             
-            url = f"{self.db_url}/rest/v1/incendios_grandes"
+            url = f"{self.supabase_url}/rest/v1/incendios_grandes"
             headers = {
-                'apikey': self.db_key,
-                'Authorization': f'Bearer {self.db_key}',
+                'apikey': self.supabase_key,
+                'Authorization': f'Bearer {self.supabase_key}',
                 'Content-Type': 'application/json',
                 'Prefer': 'return=minimal'
             }
@@ -419,66 +420,72 @@ class FireProcessor:
                 batch = records[i:i+1000]
                 response = requests.post(url, json=batch, headers=headers)
                 if response.status_code not in [200, 201]:
-                    print(f"Error batch {i//1000 + 1}: {response.status_code}")
+                    print(f"Error subiendo batch {i//1000 + 1}: {response.status_code}")
+                    print(f"Response: {response.text}")
                     return False
             
-            print(f"Agregados {len(records)} polígonos nuevos")
+            print(f"Agregados {len(records)} polígonos nuevos a Supabase")
             return True
         except Exception as e:
-            print(f"Error guardando: {e}")
+            print(f"Error subiendo a Supabase: {e}")
             return False
     
-    def run_process(self):
-        print("=== PROCESO INCREMENTAL ===\n")
+    def process_all(self):
+        print("=== INICIANDO PROCESAMIENTO INCREMENTAL DE INCENDIOS ===\n")
         
         try:
-            data, existing_ids = self.step_one()
-            if data.empty:
-                return {"success": False, "error": "Sin datos"}
+            fire_data, existing_ids = self.update_fire_data()
+            if fire_data.empty:
+                print("No hay datos de incendios para procesar")
+                return {"success": False, "error": "No hay datos de incendios"}
             
-            data_with_ids = self.step_two(data, existing_ids)
-            if data_with_ids.empty:
-                return {"success": False, "error": "Error paso 2"}
+            fire_with_ids = self.assign_event_ids(fire_data, existing_ids)
+            if fire_with_ids.empty:
+                print("No se pudieron asignar IDs de eventos")
+                return {"success": False, "error": "No se pudieron asignar IDs de eventos"}
             
-            polygons = self.step_three(data_with_ids)
+            polygons = self.create_polygons(fire_with_ids)
             if polygons.empty:
-                return {"success": False, "error": "Error paso 3"}
+                print("No se pudieron crear polígonos")
+                return {"success": False, "error": "No se pudieron crear polígonos"}
             
-            no_overlaps = self.step_four(polygons)
+            no_overlaps = self.remove_overlaps(polygons)
             if no_overlaps.empty:
-                return {"success": False, "error": "Error paso 4"}
+                print("Error eliminando sobreposiciones")
+                return {"success": False, "error": "Error eliminando sobreposiciones"}
             
-            final_data = self.step_five(no_overlaps)
-            if final_data is None or final_data.empty:
-                return {"success": False, "error": "Error paso 5"}
+            todos_eventos = self.assign_location_and_calculate(no_overlaps)
+            if todos_eventos is None or todos_eventos.empty:
+                print("Error en cálculos finales")
+                return {"success": False, "error": "Error en cálculos finales"}
             
-            large_events = final_data[final_data['superficie_ha_total'] >= 10]
+            eventos_grandes = todos_eventos[todos_eventos['superficie_ha_total'] >= 10]
             
-            success = self.save_data(final_data)
+            success = self.save_to_supabase(todos_eventos)
             
             result = {
                 "success": True,
-                "message": "Proceso incremental completado",
+                "message": "Procesamiento incremental completado exitosamente",
                 "stats": {
-                    "total_poligonos": len(final_data),
-                    "eventos_unicos": final_data['evento_id'].nunique(),
-                    "eventos_grandes": len(large_events),
-                    "superficie_total": final_data['superficie_ha_individual'].sum(),
+                    "total_poligonos": len(todos_eventos),
+                    "eventos_unicos": todos_eventos['evento_id'].nunique(),
+                    "eventos_grandes": len(eventos_grandes),
+                    "superficie_total": todos_eventos['superficie_ha_individual'].sum(),
                     "uploaded": success
                 },
                 "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
             }
             
-            print(f"\n=== COMPLETADO ===")
-            print(f"Total: {len(final_data)}")
-            print(f"Eventos: {final_data['evento_id'].nunique()}")
-            print(f"Grandes: {len(large_events)}")
-            print(f"Guardado: {'OK' if success else 'ERROR'}")
+            print(f"\n=== PROCESAMIENTO COMPLETADO ===")
+            print(f"✅ Total polígonos: {len(todos_eventos)}")
+            print(f"✅ Eventos únicos: {todos_eventos['evento_id'].nunique()}")
+            print(f"✅ Eventos grandes: {len(eventos_grandes)}")
+            print(f"✅ Subida a Supabase: {'OK' if success else 'ERROR'}")
             
             return result
             
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Error en el procesamiento: {e}")
             import traceback
             traceback.print_exc()
             return {"success": False, "error": str(e)}
