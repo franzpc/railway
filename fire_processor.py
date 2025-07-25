@@ -20,40 +20,12 @@ class FireProcessor:
         self.main_url = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
         self.map_key = os.getenv('NASA_FIRMS_KEY', '9c57ff9dd1fb752c9c1dc9da87bce875')
         self.sources = ["VIIRS_NOAA20_NRT", "VIIRS_NOAA21_NRT", "VIIRS_SNPP_NRT"]
-        self.day_range = 10
+        self.day_range = 3  # Solo últimos 3 días
         self.distance_threshold = 1000
         self.time_lag = 3
         
         self.supabase_url = 'https://neixcsnkwtgdxkucfcnb.supabase.co'
         self.supabase_key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5laXhjc25rd3RnZHhrdWNmY25iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDk1NzQ0OTQsImV4cCI6MjA2NTE1MDQ5NH0.OLcE9XYvYL6vzuXqcgp3dMowDZblvQo8qR21Cj39nyY'
-        
-    def load_existing_ids(self):
-        try:
-            url = f"{self.supabase_url}/rest/v1/incendios_grandes?select=evento_id"
-            headers = {
-                'apikey': self.supabase_key,
-                'Authorization': f'Bearer {self.supabase_key}'
-            }
-            response = requests.get(url, headers=headers)
-            if response.status_code == 200:
-                data = response.json()
-                return set([str(item['evento_id']) for item in data if item['evento_id']])
-            return set()
-        except:
-            return set()
-    
-    def create_tracking_id(self, lng, lat, date, existing_ids):
-        base_id = f"{date.timetuple().tm_yday:03d}{abs(int(lng*10)):03d}{abs(int(lat*10)):03d}"
-        
-        if base_id not in existing_ids:
-            return base_id
-        
-        for i in range(1, 100):
-            new_id = f"{base_id}{i:02d}"
-            if new_id not in existing_ids:
-                return new_id
-        
-        return base_id
         
     def download_fire_data(self, source, date):
         area = ",".join(map(str, self.area_coords))
@@ -82,11 +54,54 @@ class FireProcessor:
             print(f"Error descargando {source}: {e}")
             return gpd.GeoDataFrame()
     
+    def generate_unique_id(self, geometry, fecha):
+        """Genera ID único: juliano + lng3 + lat3"""
+        try:
+            if hasattr(geometry, 'centroid'):
+                centroid = geometry.centroid
+                lon = centroid.x
+                lat = centroid.y
+            else:
+                lon = geometry.x
+                lat = geometry.y
+            
+            julian_day = fecha.timetuple().tm_yday
+            lng3 = f"{abs(lon):.3f}".replace('.', '')[-3:]
+            lat3 = f"{abs(lat):.3f}".replace('.', '')[-3:]
+            
+            unique_id = f"{julian_day}{lng3}{lat3}"
+            return int(unique_id)
+        except Exception as e:
+            print(f"Error generando ID único: {e}")
+            return None
+
+    def get_existing_ids_from_supabase(self):
+        """Obtiene IDs existentes de Supabase"""
+        try:
+            url = f"{self.supabase_url}/rest/v1/incendios_grandes?select=fire_id"
+            headers = {
+                'apikey': self.supabase_key,
+                'Authorization': f'Bearer {self.supabase_key}'
+            }
+            
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                existing_ids = set([item['fire_id'] for item in data if item.get('fire_id')])
+                print(f"IDs existentes en Supabase: {len(existing_ids)}")
+                return existing_ids
+            else:
+                print(f"Error obteniendo IDs existentes: {response.status_code}")
+                return set()
+        except Exception as e:
+            print(f"Error conectando con Supabase: {e}")
+            return set()
+
     def get_all_fire_data(self):
-        date = datetime.now() - timedelta(days=3)
+        date = datetime.now() - timedelta(days=4)  # 4 días para tener overlap
         all_data = []
         
-        print("Descargando datos de incendios...")
+        print("Descargando datos de incendios (últimos 3 días)...")
         for source in self.sources:
             data = self.download_fire_data(source, date)
             if not data.empty:
@@ -116,49 +131,30 @@ class FireProcessor:
         combined['evento_id'] = None
         combined['ACQ_DATE'] = pd.to_datetime(combined['ACQ_DATE'])
         
+        # Filtrar solo últimos 3 días
+        cutoff_date = datetime.now() - timedelta(days=3)
+        combined = combined[combined['ACQ_DATE'] >= cutoff_date.strftime('%Y-%m-%d')]
+        
         return combined
-    
-    def update_fire_data(self):
-        print("Paso 1: Actualizando datos de incendios...")
-        
-        new_data = self.get_all_fire_data()
-        if new_data.empty:
-            print("No hay datos nuevos")
-            return gpd.GeoDataFrame(), set()
-        
-        existing_ids = self.load_existing_ids()
-        print(f"Descargados {len(new_data)} registros de FIRMS")
-        print(f"IDs existentes en base: {len(existing_ids)}")
-        return new_data, existing_ids
-    
-    def assign_event_ids(self, incendios, existing_ids):
+
+    def assign_event_ids(self, incendios):
         print("Paso 2: Asignando IDs de eventos...")
         
-        incendios = incendios[
-            (incendios['ACQ_DATE'] >= '2025-04-01') & 
-            (incendios['ACQ_DATE'] <= '2025-12-31')
-        ].copy()
+        # Filtrar solo fechas recientes (últimos 30 días para contexto)
+        cutoff_date = datetime.now() - timedelta(days=30)
+        incendios = incendios[incendios['ACQ_DATE'] >= cutoff_date.strftime('%Y-%m-%d')].copy()
         
         if incendios.empty:
             return incendios
         
         incendios = incendios.sort_values('ACQ_DATE').reset_index(drop=True)
         incendios['evento_id'] = None
+        evento_id = 1
         
         print("Procesando clustering espacial-temporal...")
         for i in tqdm(range(len(incendios))):
             if pd.isna(incendios.loc[i, 'evento_id']):
-                point = incendios.iloc[i]
-                coords = point.geometry.get_coordinates()
-                lng, lat = coords.x.iloc[0], coords.y.iloc[0]
-                
-                lng_4326 = lng * 180 / 20037508.34
-                lat_4326 = lat * 180 / 20037508.34
-                
-                tracking_id = self.create_tracking_id(lng_4326, lat_4326, point['ACQ_DATE'], existing_ids)
-                existing_ids.add(tracking_id)
-                
-                incendios.loc[i, 'evento_id'] = tracking_id
+                incendios.loc[i, 'evento_id'] = evento_id
                 puntos_evento = [i]
                 
                 while True:
@@ -183,13 +179,81 @@ class FireProcessor:
                         candidatos_finales = candidatos_temporales[distancia_valida]
                         
                         for idx in candidatos_finales.index:
-                            incendios.loc[idx, 'evento_id'] = tracking_id
+                            incendios.loc[idx, 'evento_id'] = evento_id
                             nuevos_puntos.append(idx)
                     
                     if not nuevos_puntos:
                         break
                     
                     puntos_evento = nuevos_puntos
+                
+                evento_id += 1
+        
+        return incendios
+    
+    def update_fire_data(self):
+        print("Paso 1: Actualizando datos de incendios...")
+        
+        new_data = self.get_all_fire_data()
+        if new_data.empty:
+            print("No hay datos nuevos")
+            return gpd.GeoDataFrame()
+        
+        print(f"Descargados {len(new_data)} registros de FIRMS")
+        return new_data
+    
+    def assign_event_ids(self, incendios):
+        print("Paso 2: Asignando IDs de eventos...")
+        
+        incendios = incendios[
+            (incendios['ACQ_DATE'] >= '2025-04-01') & 
+            (incendios['ACQ_DATE'] <= '2025-12-31')
+        ].copy()
+        
+        if incendios.empty:
+            return incendios
+        
+        incendios = incendios.sort_values('ACQ_DATE').reset_index(drop=True)
+        incendios['evento_id'] = None
+        evento_id = 1
+        
+        print("Procesando clustering espacial-temporal...")
+        for i in tqdm(range(len(incendios))):
+            if pd.isna(incendios.loc[i, 'evento_id']):
+                incendios.loc[i, 'evento_id'] = evento_id
+                puntos_evento = [i]
+                
+                while True:
+                    nuevos_puntos = []
+                    
+                    for punto_idx in puntos_evento:
+                        punto_base = incendios.iloc[punto_idx]
+                        sin_clasificar = incendios[incendios['evento_id'].isna()]
+                        
+                        if sin_clasificar.empty:
+                            continue
+                        
+                        diferencia_tiempo = (sin_clasificar['ACQ_DATE'] - punto_base['ACQ_DATE']).dt.days
+                        tiempo_valido = (diferencia_tiempo >= 0) & (diferencia_tiempo <= self.time_lag)
+                        candidatos_temporales = sin_clasificar[tiempo_valido]
+                        
+                        if candidatos_temporales.empty:
+                            continue
+                        
+                        distancias = candidatos_temporales.geometry.distance(punto_base.geometry)
+                        distancia_valida = distancias <= self.distance_threshold
+                        candidatos_finales = candidatos_temporales[distancia_valida]
+                        
+                        for idx in candidatos_finales.index:
+                            incendios.loc[idx, 'evento_id'] = evento_id
+                            nuevos_puntos.append(idx)
+                    
+                    if not nuevos_puntos:
+                        break
+                    
+                    puntos_evento = nuevos_puntos
+                
+                evento_id += 1
         
         return incendios
     
@@ -366,6 +430,12 @@ class FireProcessor:
             grupo['fecha_inicio'] = grupo['fecha'].min()
             grupo['fecha_fin'] = grupo['fecha'].max()
             grupo['duracion_dias'] = (grupo['fecha_fin'] - grupo['fecha_inicio']).dt.days + 1
+            
+            # Generar ID único para cada polígono
+            for idx in grupo.index:
+                fire_id = self.generate_unique_id(grupo.loc[idx, 'geometry'], grupo.loc[idx, 'fecha'])
+                grupo.loc[idx, 'fire_id'] = fire_id
+            
             return grupo
         
         incendios_calculados = (incendios_calculados.groupby('evento_id')
@@ -390,14 +460,19 @@ class FireProcessor:
                 print("No hay polígonos grandes (>=10 ha) para subir")
                 return True
             
-            existing_ids = self.load_existing_ids()
-            new_events = eventos_grandes[~eventos_grandes['evento_id'].astype(str).isin(existing_ids)].copy()
+            # Obtener IDs existentes
+            existing_ids = self.get_existing_ids_from_supabase()
             
-            if new_events.empty:
-                print("No hay eventos nuevos para agregar")
+            # Filtrar solo eventos nuevos
+            eventos_nuevos = eventos_grandes[~eventos_grandes['fire_id'].isin(existing_ids)].copy()
+            
+            if eventos_nuevos.empty:
+                print("No hay eventos nuevos para subir")
                 return True
             
-            data_copy = new_events.copy()
+            print(f"Eventos nuevos a subir: {len(eventos_nuevos)}")
+            
+            data_copy = eventos_nuevos.copy()
             data_copy = data_copy.to_crs('EPSG:4326')
             data_copy['geom'] = data_copy['geometry'].apply(lambda x: x.wkt)
             data_copy = data_copy.drop('geometry', axis=1)
@@ -416,6 +491,7 @@ class FireProcessor:
                 'Prefer': 'return=minimal'
             }
             
+            # SOLO INSERT (no DELETE)
             for i in range(0, len(records), 1000):
                 batch = records[i:i+1000]
                 response = requests.post(url, json=batch, headers=headers)
@@ -424,22 +500,22 @@ class FireProcessor:
                     print(f"Response: {response.text}")
                     return False
             
-            print(f"Agregados {len(records)} polígonos nuevos a Supabase")
+            print(f"Subidos {len(records)} polígonos nuevos a Supabase")
             return True
         except Exception as e:
             print(f"Error subiendo a Supabase: {e}")
             return False
     
     def process_all(self):
-        print("=== INICIANDO PROCESAMIENTO INCREMENTAL DE INCENDIOS ===\n")
+        print("=== INICIANDO PROCESAMIENTO COMPLETO DE INCENDIOS ===\n")
         
         try:
-            fire_data, existing_ids = self.update_fire_data()
+            fire_data = self.update_fire_data()
             if fire_data.empty:
                 print("No hay datos de incendios para procesar")
                 return {"success": False, "error": "No hay datos de incendios"}
             
-            fire_with_ids = self.assign_event_ids(fire_data, existing_ids)
+            fire_with_ids = self.assign_event_ids(fire_data)
             if fire_with_ids.empty:
                 print("No se pudieron asignar IDs de eventos")
                 return {"success": False, "error": "No se pudieron asignar IDs de eventos"}
@@ -465,7 +541,7 @@ class FireProcessor:
             
             result = {
                 "success": True,
-                "message": "Procesamiento incremental completado exitosamente",
+                "message": "Procesamiento completado exitosamente",
                 "stats": {
                     "total_poligonos": len(todos_eventos),
                     "eventos_unicos": todos_eventos['evento_id'].nunique(),
