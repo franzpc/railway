@@ -90,12 +90,6 @@ class FireProcessor:
         
         return combined
     
-    def load_existing_from_supabase(self):
-        return gpd.GeoDataFrame()
-    
-    def save_raw_to_supabase(self, data):
-        return True
-    
     def update_fire_data(self):
         print("Paso 1: Actualizando datos de incendios...")
         
@@ -311,8 +305,14 @@ class FireProcessor:
         ubicacion_cols = ['evento_id', 'DPA_DESPRO', 'DPA_DESCAN', 'DPA_DESPAR']
         info_ubicacion = info_ubicacion[ubicacion_cols]
         
+        info_ubicacion = info_ubicacion.rename(columns={
+            'DPA_DESPRO': 'dpa_despro',
+            'DPA_DESCAN': 'dpa_descan',
+            'DPA_DESPAR': 'dpa_despar'
+        })
+        
         incendios_con_ubicacion = incendios.merge(info_ubicacion, on='evento_id', how='left')
-        incendios_limpios = incendios_con_ubicacion.dropna(subset=['evento_id', 'fecha', 'DPA_DESPRO'])
+        incendios_limpios = incendios_con_ubicacion.dropna(subset=['evento_id', 'fecha', 'dpa_despro'])
         
         if incendios_limpios.empty:
             print("No hay datos válidos después de la limpieza")
@@ -367,16 +367,19 @@ class FireProcessor:
             headers = {
                 'apikey': self.supabase_key,
                 'Authorization': f'Bearer {self.supabase_key}',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal'
             }
             
-            delete_response = requests.delete(url, headers=headers)
+            delete_response = requests.delete(url + "?id=gt.0", headers=headers)
             
             for i in range(0, len(records), 1000):
                 batch = records[i:i+1000]
                 response = requests.post(url, json=batch, headers=headers)
                 if response.status_code not in [200, 201]:
                     print(f"Error subiendo batch {i//1000 + 1}: {response.status_code}")
+                    print(f"Response: {response.text}")
+                    return False
             
             print(f"Subidos {len(records)} eventos grandes a Supabase")
             return True
