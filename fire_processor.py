@@ -55,26 +55,26 @@ class FireProcessor:
             return gpd.GeoDataFrame()
     
     def generate_unique_id(self, evento_id, fecha, geometry):
-        """Genera ID único: juliano + lng3 + lat3"""
+        """Genera ID único: juliano + lng2 + lat2 (más corto)"""
         try:
             # Día juliano
             juliano = fecha.timetuple().tm_yday
             
             # Centroide de la geometría
             centroid = geometry.centroid
-            lng = round(centroid.x, 3)
-            lat = round(centroid.y, 3)
+            lng = round(centroid.x, 2)
+            lat = round(centroid.y, 2)
             
-            # Convertir a enteros para concatenar
-            lng_int = int(abs(lng) * 1000)
-            lat_int = int(abs(lat) * 1000)
+            # Convertir a enteros para concatenar (más cortos)
+            lng_int = int(abs(lng) * 100)
+            lat_int = int(abs(lat) * 100)
             
-            # Formato: juliano + lng3 + lat3
-            unique_id = int(f"{juliano:03d}{lng_int:06d}{lat_int:05d}")
+            # Formato más corto: juliano + lng2 + lat2
+            unique_id = int(f"{juliano:03d}{lng_int:04d}{lat_int:03d}")
             
             return unique_id
         except:
-            # Fallback: usar evento_id + fecha
+            # Fallback más corto
             return int(f"{evento_id}{fecha.strftime('%j')}")
     
     def load_existing_ids_from_supabase(self):
@@ -98,10 +98,10 @@ class FireProcessor:
             return set()
     
     def update_fire_data(self):
-        print("Paso 1: Actualizando datos de incendios (últimos 3 días)...")
+        print("Paso 1: Actualizando datos de incendios (últimos 10 días)...")
         
-        # Solo últimos 3 días para procesamiento incremental
-        date = datetime.now() - timedelta(days=3)
+        # Últimos 10 días
+        date = datetime.now() - timedelta(days=10)
         all_data = []
         
         print("Descargando datos de incendios...")
@@ -135,7 +135,7 @@ class FireProcessor:
         combined['evento_id'] = None
         combined['ACQ_DATE'] = pd.to_datetime(combined['ACQ_DATE'])
         
-        print(f"Descargados {len(combined)} registros de FIRMS (últimos 3 días)")
+        print(f"Descargados {len(combined)} registros de FIRMS (últimos 10 días)")
         return combined
     
     def assign_event_ids(self, incendios):
