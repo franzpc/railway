@@ -55,26 +55,26 @@ class FireProcessor:
             return gpd.GeoDataFrame()
     
     def generate_unique_id(self, evento_id, fecha, geometry):
-        """Genera ID único: juliano + lng2 + lat2 (más corto)"""
+        """Genera ID único: juliano(3) + lng(3) + lat(3) = 9 dígitos"""
         try:
-            # Día juliano
+            # Día juliano (3 dígitos)
             juliano = fecha.timetuple().tm_yday
             
             # Centroide de la geometría
             centroid = geometry.centroid
-            lng = round(centroid.x, 2)
-            lat = round(centroid.y, 2)
+            lng = abs(centroid.x)
+            lat = abs(centroid.y)
             
-            # Convertir a enteros para concatenar (más cortos)
-            lng_int = int(abs(lng) * 100)
-            lat_int = int(abs(lat) * 100)
+            # Tomar 3 dígitos de cada coordenada
+            lng_3digits = int((lng % 1) * 1000)  # 3 decimales = 3 dígitos
+            lat_3digits = int((lat % 1) * 1000)  # 3 decimales = 3 dígitos
             
-            # Formato más corto: juliano + lng2 + lat2
-            unique_id = int(f"{juliano:03d}{lng_int:04d}{lat_int:03d}")
+            # Formato: juliano(3) + lng(3) + lat(3)
+            unique_id = int(f"{juliano:03d}{lng_3digits:03d}{lat_3digits:03d}")
             
             return unique_id
         except:
-            # Fallback más corto
+            # Fallback simple
             return int(f"{evento_id}{fecha.strftime('%j')}")
     
     def load_existing_ids_from_supabase(self):
