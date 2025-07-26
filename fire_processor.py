@@ -54,8 +54,54 @@ class FireProcessor:
             print(f"Error descargando {source}: {e}")
             return gpd.GeoDataFrame()
     
-    def get_all_fire_data(self):
-        date = datetime.now() - timedelta(days=11)
+    def generate_unique_id(self, evento_id, fecha, geometry):
+        """Genera ID único: juliano + lng3 + lat3"""
+        try:
+            # Día juliano
+            juliano = fecha.timetuple().tm_yday
+            
+            # Centroide de la geometría
+            centroid = geometry.centroid
+            lng = round(centroid.x, 3)
+            lat = round(centroid.y, 3)
+            
+            # Convertir a enteros para concatenar
+            lng_int = int(abs(lng) * 1000)
+            lat_int = int(abs(lat) * 1000)
+            
+            # Formato: juliano + lng3 + lat3
+            unique_id = int(f"{juliano:03d}{lng_int:06d}{lat_int:05d}")
+            
+            return unique_id
+        except:
+            # Fallback: usar evento_id + fecha
+            return int(f"{evento_id}{fecha.strftime('%j')}")
+    
+    def load_existing_ids_from_supabase(self):
+        """Carga IDs existentes de Supabase"""
+        try:
+            url = f"{self.supabase_url}/rest/v1/incendios_grandes?select=id"
+            headers = {
+                'apikey': self.supabase_key,
+                'Authorization': f'Bearer {self.supabase_key}'
+            }
+            
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                existing_ids = {item['id'] for item in data}
+                print(f"📋 IDs existentes en Supabase: {len(existing_ids)}")
+                return existing_ids
+            return set()
+        except Exception as e:
+            print(f"Error cargando IDs existentes: {e}")
+            return set()
+    
+    def update_fire_data(self):
+        print("Paso 1: Actualizando datos de incendios (últimos 3 días)...")
+        
+        # Solo últimos 3 días para procesamiento incremental
+        date = datetime.now() - timedelta(days=3)
         all_data = []
         
         print("Descargando datos de incendios...")
@@ -65,13 +111,14 @@ class FireProcessor:
                 all_data.append(data)
         
         if not all_data:
+            print("No hay datos nuevos")
             return gpd.GeoDataFrame()
         
         combined = pd.concat(all_data, ignore_index=True)
         
         column_mapping = {
             'bright_ti4': 'BRIGHTNESS',
-            'scan': 'SCAN',
+            'scan': 'SCAN', 
             'track': 'TRACK',
             'acq_date': 'ACQ_DATE',
             'acq_time': 'ACQ_TIME',
@@ -88,18 +135,8 @@ class FireProcessor:
         combined['evento_id'] = None
         combined['ACQ_DATE'] = pd.to_datetime(combined['ACQ_DATE'])
         
+        print(f"Descargados {len(combined)} registros de FIRMS (últimos 3 días)")
         return combined
-    
-    def update_fire_data(self):
-        print("Paso 1: Actualizando datos de incendios...")
-        
-        new_data = self.get_all_fire_data()
-        if new_data.empty:
-            print("No hay datos nuevos")
-            return gpd.GeoDataFrame()
-        
-        print(f"Descargados {len(new_data)} registros de FIRMS")
-        return new_data
     
     def assign_event_ids(self, incendios):
         print("Paso 2: Asignando IDs de eventos...")
@@ -353,10 +390,32 @@ class FireProcessor:
                 print("No hay polígonos grandes (>=10 ha) para subir")
                 return True
             
-            data_copy = eventos_grandes.copy()
+            # Cargar IDs existentes
+            existing_ids = self.load_existing_ids_from_supabase()
+            
+            # Generar IDs únicos para los nuevos datos
+            eventos_grandes['unique_id'] = eventos_grandes.apply(
+                lambda row: self.generate_unique_id(row['evento_id'], row['fecha'], row['geometry']), 
+                axis=1
+            )
+            
+            # Filtrar solo eventos nuevos
+            eventos_nuevos = eventos_grandes[~eventos_grandes['unique_id'].isin(existing_ids)].copy()
+            
+            if eventos_nuevos.empty:
+                print("✅ No hay eventos nuevos para subir")
+                return True
+            
+            print(f"📦 Eventos nuevos a subir: {len(eventos_nuevos)}")
+            
+            # Preparar datos para Supabase
+            data_copy = eventos_nuevos.copy()
             data_copy = data_copy.to_crs('EPSG:4326')
             data_copy['geom'] = data_copy['geometry'].apply(lambda x: x.wkt)
             data_copy = data_copy.drop('geometry', axis=1)
+            
+            # Renombrar unique_id a id para Supabase
+            data_copy = data_copy.rename(columns={'unique_id': 'id'})
             
             for col in data_copy.select_dtypes(include=['datetime64']).columns:
                 data_copy[col] = data_copy[col].dt.strftime('%Y-%m-%d')
@@ -372,8 +431,7 @@ class FireProcessor:
                 'Prefer': 'return=minimal'
             }
             
-            delete_response = requests.delete(url + "?id=gt.0", headers=headers)
-            
+            # Solo INSERT (no DELETE) - procesamiento incremental
             for i in range(0, len(records), 1000):
                 batch = records[i:i+1000]
                 response = requests.post(url, json=batch, headers=headers)
@@ -382,10 +440,13 @@ class FireProcessor:
                     print(f"Response: {response.text}")
                     return False
             
-            print(f"Subidos {len(records)} polígonos grandes a Supabase")
+            print(f"✅ Subidos {len(records)} polígonos nuevos a Supabase")
             return True
+            
         except Exception as e:
             print(f"Error subiendo a Supabase: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def process_all(self):
