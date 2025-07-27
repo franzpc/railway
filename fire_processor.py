@@ -348,7 +348,43 @@ class FireProcessor:
             'DPA_DESPAR': 'dpa_despar'
         })
         
-        incendios_con_ubicacion = incendios.merge(info_ubicacion, on='evento_id', how='left')
+        # Generar ID único POR EVENTO (no por polígono)
+        print("Generando IDs únicos por evento...")
+        evento_ids_unicos = {}
+        
+        for _, row in info_ubicacion.iterrows():
+            evento_original = row['evento_id']
+            
+            # Buscar el primer polígono de este evento para generar ID
+            primer_poligono = incendios[incendios['evento_id'] == evento_original].iloc[0]
+            
+            # Generar ID único basado en el primer polígono del evento
+            unique_id = self.generate_unique_id(primer_poligono['fecha'], primer_poligono['geometry'])
+            evento_ids_unicos[evento_original] = unique_id
+        
+        # Crear mapeo de evento_id original → evento_id único
+        info_ubicacion['evento_id_unico'] = info_ubicacion['evento_id'].map(evento_ids_unicos)
+        info_ubicacion = info_ubicacion.drop('evento_id', axis=1)
+        info_ubicacion = info_ubicacion.rename(columns={'evento_id_unico': 'evento_id'})
+        
+        incendios_con_ubicacion = incendios.merge(
+            info_ubicacion[['evento_id']], 
+            left_on='evento_id', 
+            right_index=True, 
+            how='left'
+        )
+        
+        # Actualizar evento_id en incendios con los IDs únicos
+        incendios_con_ubicacion['evento_id'] = incendios_con_ubicacion['evento_id_y']
+        incendios_con_ubicacion = incendios_con_ubicacion.drop(['evento_id_x', 'evento_id_y'], axis=1)
+        
+        # Merge con información de ubicación
+        incendios_con_ubicacion = incendios_con_ubicacion.merge(
+            info_ubicacion, 
+            on='evento_id', 
+            how='left'
+        )
+        
         incendios_limpios = incendios_con_ubicacion.dropna(subset=['evento_id', 'fecha', 'dpa_despro'])
         
         if incendios_limpios.empty:
@@ -393,24 +429,16 @@ class FireProcessor:
             # Cargar evento_ids existentes
             existing_ids = self.load_existing_ids_from_supabase()
             
-            # Generar IDs únicos para evento_id (corregido)
-            eventos_grandes['new_evento_id'] = eventos_grandes.apply(
-                lambda row: self.generate_unique_id(row['fecha'], row['geometry']), 
-                axis=1
-            )
-            
-            # Filtrar solo eventos nuevos
-            eventos_nuevos = eventos_grandes[~eventos_grandes['new_evento_id'].isin(existing_ids)].copy()
+            # Los evento_id ya están generados correctamente en assign_location_and_calculate
+            # Solo filtrar eventos que no existan en Supabase
+            eventos_nuevos = eventos_grandes[~eventos_grandes['evento_id'].isin(existing_ids)].copy()
             
             if eventos_nuevos.empty:
                 print("✅ No hay eventos nuevos para subir")
                 return True
             
             print(f"📦 Eventos nuevos a subir: {len(eventos_nuevos)}")
-            
-            # Reemplazar evento_id con el nuevo ID único
-            eventos_nuevos['evento_id'] = eventos_nuevos['new_evento_id']
-            eventos_nuevos = eventos_nuevos.drop('new_evento_id', axis=1)
+            print(f"📦 Eventos únicos nuevos: {eventos_nuevos['evento_id'].nunique()}")
             
             # Preparar datos para Supabase
             data_copy = eventos_nuevos.copy()
