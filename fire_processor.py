@@ -54,7 +54,7 @@ class FireProcessor:
             print(f"Error descargando {source}: {e}")
             return gpd.GeoDataFrame()
     
-    def generate_unique_id(self, evento_id, fecha, geometry):
+    def generate_unique_id(self, fecha, geometry):
         """Genera ID único: juliano(3) + lng(3) + lat(3) = 9 dígitos"""
         try:
             # Día juliano (3 dígitos)
@@ -65,17 +65,17 @@ class FireProcessor:
             lng = abs(centroid.x)
             lat = abs(centroid.y)
             
-            # Tomar 3 dígitos de cada coordenada
-            lng_3digits = int((lng % 1) * 1000)  # 3 decimales = 3 dígitos
-            lat_3digits = int((lat % 1) * 1000)  # 3 decimales = 3 dígitos
+            # Tomar 3 primeros dígitos sin importar signo ni decimal
+            lng_str = str(lng).replace('.', '')[:3].ljust(3, '0')
+            lat_str = str(lat).replace('.', '')[:3].ljust(3, '0')
             
             # Formato: juliano(3) + lng(3) + lat(3)
-            unique_id = int(f"{juliano:03d}{lng_3digits:03d}{lat_3digits:03d}")
+            unique_id = int(f"{juliano:03d}{lng_str}{lat_str}")
             
             return unique_id
         except:
             # Fallback simple
-            return int(f"{evento_id}{fecha.strftime('%j')}")
+            return int(f"{fecha.strftime('%j')}000000")
     
     def load_existing_ids_from_supabase(self):
         """Carga IDs existentes de Supabase"""
