@@ -367,23 +367,21 @@ class FireProcessor:
         info_ubicacion = info_ubicacion.drop('evento_id', axis=1)
         info_ubicacion = info_ubicacion.rename(columns={'evento_id_unico': 'evento_id'})
         
-        incendios_con_ubicacion = incendios.merge(
-            info_ubicacion[['evento_id']], 
-            left_on='evento_id', 
-            right_index=True, 
-            how='left'
-        )
+        # Merge más simple y directo
+        evento_mapping = info_ubicacion[['evento_id']].copy()
+        evento_mapping.index.name = 'evento_original'
+        evento_mapping = evento_mapping.reset_index()
         
-        # Actualizar evento_id en incendios con los IDs únicos
-        incendios_con_ubicacion['evento_id'] = incendios_con_ubicacion['evento_id_y']
-        incendios_con_ubicacion = incendios_con_ubicacion.drop(['evento_id_x', 'evento_id_y'], axis=1)
+        # Crear mapeo directo
+        mapeo_eventos = dict(zip(evento_mapping['evento_original'], evento_mapping['evento_id']))
         
-        # Merge con información de ubicación
-        incendios_con_ubicacion = incendios_con_ubicacion.merge(
-            info_ubicacion, 
-            on='evento_id', 
-            how='left'
-        )
+        # Aplicar mapeo a todos los incendios
+        incendios_con_ubicacion = incendios.copy()
+        incendios_con_ubicacion['evento_id'] = incendios_con_ubicacion['evento_id'].map(mapeo_eventos)
+        
+        # Merge con información de ubicación usando el nuevo evento_id
+        ubicacion_info = info_ubicacion[['evento_id', 'dpa_despro', 'dpa_descan', 'dpa_despar']].drop_duplicates()
+        incendios_con_ubicacion = incendios_con_ubicacion.merge(ubicacion_info, on='evento_id', how='left')
         
         incendios_limpios = incendios_con_ubicacion.dropna(subset=['evento_id', 'fecha', 'dpa_despro'])
         
@@ -450,6 +448,10 @@ class FireProcessor:
                 data_copy[col] = data_copy[col].dt.strftime('%Y-%m-%d')
             
             data_copy = data_copy.fillna('')
+            
+            # Asegurar que evento_id sea integer sin decimales
+            data_copy['evento_id'] = data_copy['evento_id'].astype(int)
+            
             records = data_copy.to_dict('records')
             
             url = f"{self.supabase_url}/rest/v1/incendios_grandes"
