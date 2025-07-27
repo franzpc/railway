@@ -331,6 +331,7 @@ class FireProcessor:
         if provincias.crs != incendios.crs:
             provincias = provincias.to_crs(incendios.crs)
         
+        # Primero hacer el join espacial con los evento_id originales
         incendios_inicio = (incendios.sort_values(['evento_id', 'fecha'])
                            .groupby('evento_id')
                            .first()
@@ -348,41 +349,10 @@ class FireProcessor:
             'DPA_DESPAR': 'dpa_despar'
         })
         
-        # Generar ID único POR EVENTO (no por polígono)
-        print("Generando IDs únicos por evento...")
-        evento_ids_unicos = {}
+        # Merge con información de ubicación usando evento_id original
+        incendios_con_ubicacion = incendios.merge(info_ubicacion, on='evento_id', how='left')
         
-        for _, row in info_ubicacion.iterrows():
-            evento_original = row['evento_id']
-            
-            # Buscar el primer polígono de este evento para generar ID
-            primer_poligono = incendios[incendios['evento_id'] == evento_original].iloc[0]
-            
-            # Generar ID único basado en el primer polígono del evento
-            unique_id = self.generate_unique_id(primer_poligono['fecha'], primer_poligono['geometry'])
-            evento_ids_unicos[evento_original] = unique_id
-        
-        # Crear mapeo de evento_id original → evento_id único
-        info_ubicacion['evento_id_unico'] = info_ubicacion['evento_id'].map(evento_ids_unicos)
-        info_ubicacion = info_ubicacion.drop('evento_id', axis=1)
-        info_ubicacion = info_ubicacion.rename(columns={'evento_id_unico': 'evento_id'})
-        
-        # Merge más simple y directo
-        evento_mapping = info_ubicacion[['evento_id']].copy()
-        evento_mapping.index.name = 'evento_original'
-        evento_mapping = evento_mapping.reset_index()
-        
-        # Crear mapeo directo
-        mapeo_eventos = dict(zip(evento_mapping['evento_original'], evento_mapping['evento_id']))
-        
-        # Aplicar mapeo a todos los incendios
-        incendios_con_ubicacion = incendios.copy()
-        incendios_con_ubicacion['evento_id'] = incendios_con_ubicacion['evento_id'].map(mapeo_eventos)
-        
-        # Merge con información de ubicación usando el nuevo evento_id
-        ubicacion_info = info_ubicacion[['evento_id', 'dpa_despro', 'dpa_descan', 'dpa_despar']].drop_duplicates()
-        incendios_con_ubicacion = incendios_con_ubicacion.merge(ubicacion_info, on='evento_id', how='left')
-        
+        # Filtrar solo los que tienen ubicación en Ecuador
         incendios_limpios = incendios_con_ubicacion.dropna(subset=['evento_id', 'fecha', 'dpa_despro'])
         
         if incendios_limpios.empty:
@@ -405,6 +375,22 @@ class FireProcessor:
         incendios_calculados = (incendios_calculados.groupby('evento_id')
                                .apply(calcular_metricas_evento)
                                .reset_index(drop=True))
+        
+        # AHORA generar IDs únicos por evento después de todos los cálculos
+        print("Generando IDs únicos por evento...")
+        
+        # Para cada evento, tomar el primer polígono para generar ID único
+        eventos_unicos = incendios_calculados.groupby('evento_id').first().reset_index()
+        eventos_unicos['evento_id_unico'] = eventos_unicos.apply(
+            lambda row: self.generate_unique_id(row['fecha'], row['geometry']), 
+            axis=1
+        )
+        
+        # Crear mapeo evento_id original → evento_id único
+        mapeo_ids = dict(zip(eventos_unicos['evento_id'], eventos_unicos['evento_id_unico']))
+        
+        # Aplicar el mapeo a todos los registros
+        incendios_calculados['evento_id'] = incendios_calculados['evento_id'].map(mapeo_ids)
         
         eventos_grandes = incendios_calculados[incendios_calculados['superficie_ha_total'] >= 10].copy()
         
