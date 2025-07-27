@@ -78,9 +78,9 @@ class FireProcessor:
             return int(f"{fecha.strftime('%j')}000000")
     
     def load_existing_ids_from_supabase(self):
-        """Carga IDs existentes de Supabase"""
+        """Carga evento_ids existentes de Supabase"""
         try:
-            url = f"{self.supabase_url}/rest/v1/incendios_grandes?select=id"
+            url = f"{self.supabase_url}/rest/v1/incendios_grandes?select=evento_id"
             headers = {
                 'apikey': self.supabase_key,
                 'Authorization': f'Bearer {self.supabase_key}'
@@ -89,12 +89,12 @@ class FireProcessor:
             response = requests.get(url, headers=headers)
             if response.status_code == 200:
                 data = response.json()
-                existing_ids = {item['id'] for item in data}
-                print(f"📋 IDs existentes en Supabase: {len(existing_ids)}")
+                existing_ids = {item['evento_id'] for item in data if item['evento_id']}
+                print(f"📋 evento_ids existentes en Supabase: {len(existing_ids)}")
                 return existing_ids
             return set()
         except Exception as e:
-            print(f"Error cargando IDs existentes: {e}")
+            print(f"Error cargando evento_ids existentes: {e}")
             return set()
     
     def update_fire_data(self):
@@ -390,17 +390,17 @@ class FireProcessor:
                 print("No hay polígonos grandes (>=10 ha) para subir")
                 return True
             
-            # Cargar IDs existentes
+            # Cargar evento_ids existentes
             existing_ids = self.load_existing_ids_from_supabase()
             
-            # Generar IDs únicos para los nuevos datos
-            eventos_grandes['unique_id'] = eventos_grandes.apply(
-                lambda row: self.generate_unique_id(row['evento_id'], row['fecha'], row['geometry']), 
+            # Generar IDs únicos para evento_id (corregido)
+            eventos_grandes['new_evento_id'] = eventos_grandes.apply(
+                lambda row: self.generate_unique_id(row['fecha'], row['geometry']), 
                 axis=1
             )
             
             # Filtrar solo eventos nuevos
-            eventos_nuevos = eventos_grandes[~eventos_grandes['unique_id'].isin(existing_ids)].copy()
+            eventos_nuevos = eventos_grandes[~eventos_grandes['new_evento_id'].isin(existing_ids)].copy()
             
             if eventos_nuevos.empty:
                 print("✅ No hay eventos nuevos para subir")
@@ -408,14 +408,15 @@ class FireProcessor:
             
             print(f"📦 Eventos nuevos a subir: {len(eventos_nuevos)}")
             
+            # Reemplazar evento_id con el nuevo ID único
+            eventos_nuevos['evento_id'] = eventos_nuevos['new_evento_id']
+            eventos_nuevos = eventos_nuevos.drop('new_evento_id', axis=1)
+            
             # Preparar datos para Supabase
             data_copy = eventos_nuevos.copy()
             data_copy = data_copy.to_crs('EPSG:4326')
             data_copy['geom'] = data_copy['geometry'].apply(lambda x: x.wkt)
             data_copy = data_copy.drop('geometry', axis=1)
-            
-            # Renombrar unique_id a id para Supabase
-            data_copy = data_copy.rename(columns={'unique_id': 'id'})
             
             for col in data_copy.select_dtypes(include=['datetime64']).columns:
                 data_copy[col] = data_copy[col].dt.strftime('%Y-%m-%d')
